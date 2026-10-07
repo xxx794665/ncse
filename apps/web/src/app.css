@@ -1,0 +1,53 @@
+/* AppLayout 全站框架样式（T0-05）：只引用语义 token（设计规范 §9）
+   PC（≥1024px）TopNav 吸顶；移动（<1024px）顶部品牌栏 + BottomTab，主内容区为固定 Tab 预留底部空间 */
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-base);
+}
+
+.app-shell__mobilebar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-nav);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 56px;
+  padding: 0 var(--spacing-md);
+  background-color: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+/* 断点值对应 --breakpoint-pc（§4.2） */
+@media (min-width: 1024px) {
+  .app-shell__mobilebar {
+    display: none;
+  }
+}
+
+.app-shell__brand {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.app-shell__main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--layout-max-content);
+  margin: 0 auto;
+  padding: var(--spacing-lg) var(--spacing-md);
+  /* 移动：为固定 BottomTab（56px + 安全区）预留底部空间 */
+  padding-bottom: calc(56px + env(safe-area-inset-bottom) + var(--spacing-xl));
+}
+
+@media (min-width: 1024px) {
+  .app-shell__main {
+    padding: var(--spacing-xl) var(--spacing-lg) var(--spacing-2xl);
+  }
+}

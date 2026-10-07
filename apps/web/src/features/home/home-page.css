@@ -1,0 +1,92 @@
+/* 首页仪表盘骨架（T0-05）：问候 + 模块速记入口栅格
+   断点遵循 §4.2：移动 1 列 / 平板（≥768px）2 列 / PC（≥1024px）4 列；只引用语义 token */
+
+.home-hero {
+  margin-bottom: var(--spacing-xl);
+}
+
+.home-hero__title {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+@media (min-width: 1024px) {
+  .home-hero__title {
+    font-size: var(--font-size-h1);
+  }
+}
+
+.home-hero__desc {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .home-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+@media (min-width: 1024px) {
+  .home-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.home-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  height: 100%;
+}
+
+.home-entry:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.home-entry__head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+/* 功能入口图标 24px 档（§5） */
+.home-entry__icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  color: var(--color-primary-text);
+}
+
+.home-entry__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.home-entry__desc {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.home-entry__meta {
+  margin-top: var(--spacing-2xs);
+}
