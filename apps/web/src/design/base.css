@@ -1,0 +1,24 @@
+/**
+ * 基础元素最小应用：让 tokens 全局生效（T0-03 最小接线）
+ * 组件级样式归 T0-04+；这里只放全局底座
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}

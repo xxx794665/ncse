@@ -3,7 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#FFFFFF" />
     <title>ncse · 公务员考试练习</title>
+    <!--
+      FOUC 防护（设计规范 §8.2）：首绘前算出 resolved 并写 <html data-theme>，同步 meta theme-color。
+      无依赖内联脚本，逻辑与 src/design/theme.ts 保持一致，改动需两边同步。
+    -->
+    <script>
+      (function () {
+        try {
+          var mode = window.localStorage.getItem('ncse-theme-mode')
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          var resolved = mode === 'light' || mode === 'dark' ? mode : prefersDark ? 'dark' : 'light'
+          document.documentElement.setAttribute('data-theme', resolved)
+          var meta = document.querySelector('meta[name="theme-color"]')
+          if (meta) meta.setAttribute('content', resolved === 'dark' ? '#0F172A' : '#FFFFFF')
+        } catch (error) {
+          // localStorage 不可用时按亮色首绘（:root 默认亮色），React 挂载后再校正
+          console.warn('[theme] 首绘主题探测失败，按亮色渲染', error)
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
