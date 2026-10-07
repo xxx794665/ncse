@@ -183,6 +183,9 @@
   --layout-max-content: 1200px;
   --layout-max-reading: 760px;
   --layout-max-modal: 560px; /* PC 居中模态最大宽（T0-04 补登记） */
+  --layout-min-placeholder: 320px; /* 占位区最小高（§6.7，T0-06 补登记） */
+  --layout-min-textarea: 96px; /* 多行输入最小高，约 3 行（T0-06 补登记） */
+  --layout-demo-frame: 240px; /* 演示页导航演示框高（/design 同屏对照用，T0-06 补登记） */
 
   --z-sticky: 100;
   --z-nav: 200;

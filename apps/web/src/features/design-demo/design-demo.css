@@ -130,7 +130,7 @@
 }
 
 .demo-frame--tab {
-  height: 240px;
+  height: var(--layout-demo-frame);
 }
 
 .demo-frame__hint {

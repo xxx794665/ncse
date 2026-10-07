@@ -75,9 +75,9 @@ export const APP_ROUTES: AppRoute[] = [
     title: '错题 · 收藏 · 需加强',
     icon: CircleX,
     kind: 'placeholder',
-    milestone: 'M3',
+    milestone: 'M1',
     description:
-      '错题重做与消灭、收藏练习与需加强清单的统一复习入口；错题与收藏数据自 M1 起积累，需加强清单在 M3 完整落地（功能清单 F1-7/F1-8/F3-4）。',
+      '错题重做与消灭、收藏练习与需加强清单的统一复习入口；错题本（F1-7）与收藏（F1-8）随 M1 交付，需加强清单（F3-4）M3 完整落地，错题/超时数据自 M1 起自动汇入（功能清单 F1-7/F1-8/F3-4）。',
     summary: '错题重做、收藏练习、需加强清单',
   },
   {
@@ -118,7 +118,7 @@ export const APP_ROUTES: AppRoute[] = [
     kind: 'placeholder',
     milestone: 'M4',
     description:
-      '账号级偏好与 AI 设置（OpenAI 兼容接口地址 / 密钥 / 模型 / 参数上限）；密钥加密存储、由后端代理调用（功能清单 F4-3）。',
+      '应用设置（含 AI 设置）属 M4：账号级偏好与 AI 接口配置（OpenAI 兼容地址 / 密钥 / 模型 / 参数上限），密钥加密存 D1、由后端代理调用（功能清单 F4-3）。',
     summary: '偏好与 AI 接口配置',
   },
   {

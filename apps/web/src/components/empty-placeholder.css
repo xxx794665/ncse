@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   gap: var(--spacing-md);
-  min-height: 320px;
+  min-height: var(--layout-min-placeholder);
   padding: var(--spacing-2xl) var(--spacing-lg);
   text-align: center;
 }

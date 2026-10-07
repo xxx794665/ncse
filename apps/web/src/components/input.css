@@ -73,7 +73,7 @@
 
 .ncse-textarea {
   height: auto;
-  min-height: 96px;
+  min-height: var(--layout-min-textarea);
   padding: var(--spacing-sm);
   line-height: var(--line-height-relaxed);
   resize: vertical;
