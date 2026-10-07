@@ -16,6 +16,15 @@
     "build:shared": "npm run build -w @ncse/shared",
     "check": "npm run build:shared && npm run check --workspaces --if-present",
     "build": "npm run build:shared && npm run build -w @ncse/web",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "prettier": "^3.9.9",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1"
   }
 }

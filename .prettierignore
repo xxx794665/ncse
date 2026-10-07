@@ -1,0 +1,15 @@
+# 依赖与构建产物
+node_modules/
+dist/
+coverage/
+.wrangler/
+
+# 本机工具目录
+.zcode/
+.mimosa/
+
+# npm 生成物，不参与格式化
+package-lock.json
+
+# 文档为 Markdown 为主（大量表格），格式化会整表重排，暂不纳入
+*.md

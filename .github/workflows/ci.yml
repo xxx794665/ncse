@@ -19,6 +19,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Lint (all workspaces)
+        run: npm run lint
       - name: Typecheck (all workspaces)
         run: npm run check
       - name: Build (shared + web)

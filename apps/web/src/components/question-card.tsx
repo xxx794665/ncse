@@ -5,7 +5,7 @@
  * 底部：答案与解析区（§7.4，默认折叠、判分后自动展开、模考模式整体隐藏）
  */
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { BookOpen, ChevronDown, Flag, Star } from 'lucide-react'
 import { Card } from './card'
@@ -101,11 +101,14 @@ export function QuestionCard({
   analysisDefaultOpen = false,
 }: QuestionCardProps) {
   const [analysisOpen, setAnalysisOpen] = useState(analysisDefaultOpen)
+  // graded 哨兵：初始恒为 false，保证「挂载即已判分」同样触发自动展开（与原 effect 等价）
+  const [prevGraded, setPrevGraded] = useState(false)
 
-  // 判分后解析区自动展开（§7.1）
-  useEffect(() => {
+  // 判分后解析区自动展开（§7.1）：随 graded 跳变在渲染期调整状态（react.dev 对 setState-in-effect 的推荐替代）
+  if (graded !== prevGraded) {
+    setPrevGraded(graded)
     if (graded) setAnalysisOpen(true)
-  }, [graded])
+  }
 
   const hasAnalysis = Boolean(analysis || optionAnalysis?.length || knowledgeTags?.length)
   const showAnalysis = mode !== 'mock' && hasAnalysis
