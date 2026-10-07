@@ -1,0 +1,68 @@
+/* Tag 标签（§7.4④ ghost 徽章：bg-muted + 13px；§2.2 soft 成对） */
+
+.ncse-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-3xs);
+  height: 24px;
+  padding: 0 var(--spacing-xs);
+  border: none;
+  border-radius: var(--radius-xs);
+  font-family: inherit;
+  font-size: var(--font-size-aux);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ncse-tag__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.ncse-tag--muted {
+  background-color: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+}
+
+.ncse-tag--primary {
+  background-color: var(--color-primary-soft);
+  color: var(--color-primary-soft-text);
+}
+
+.ncse-tag--success {
+  background-color: var(--color-success-soft);
+  color: var(--color-success-soft-text);
+}
+
+.ncse-tag--warning {
+  background-color: var(--color-warning-soft);
+  color: var(--color-warning-soft-text);
+}
+
+.ncse-tag--danger {
+  background-color: var(--color-danger-soft);
+  color: var(--color-danger-soft-text);
+}
+
+.ncse-tag--info {
+  background-color: var(--color-info-soft);
+  color: var(--color-info-soft-text);
+}
+
+.ncse-tag--clickable {
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-tag--clickable:hover {
+  background-color: var(--color-primary-soft);
+  color: var(--color-primary-soft-text);
+}
+
+.ncse-tag--clickable:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}

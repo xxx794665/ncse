@@ -1,0 +1,118 @@
+/* Button（设计规范 §6.1）：只消费语义 token；高 32/40/48 为规范定值 */
+
+.ncse-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-button:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== 尺寸（§6.1：sm 高32/字号14/px-12；md 高40/字号15/px-16；lg 高48/字号16/px-24） ===== */
+.ncse-button--sm {
+  height: 32px;
+  padding: 0 var(--spacing-sm);
+  font-size: var(--font-size-caption);
+}
+
+.ncse-button--md {
+  height: 40px;
+  padding: 0 var(--spacing-md);
+  font-size: var(--font-size-body-sm);
+}
+
+.ncse-button--lg {
+  height: 48px;
+  padding: 0 var(--spacing-lg);
+  font-size: var(--font-size-body);
+}
+
+/* 图标尺寸阶梯（§5）：按钮内 16（sm）/20（md/lg）px */
+.ncse-button--sm .ncse-button__spinner,
+.ncse-button--sm > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ncse-button--md .ncse-button__spinner,
+.ncse-button--md > svg,
+.ncse-button--lg .ncse-button__spinner,
+.ncse-button--lg > svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== 变体（§6.1 形态表） ===== */
+.ncse-button--primary {
+  background-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+
+.ncse-button--primary:not(:disabled):hover {
+  background-color: var(--color-primary-hover);
+}
+
+.ncse-button--primary:not(:disabled):active {
+  background-color: var(--color-primary-active);
+}
+
+.ncse-button--secondary {
+  background-color: var(--color-bg-elevated);
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+.ncse-button--secondary:not(:disabled):hover {
+  background-color: var(--color-bg-muted);
+}
+
+.ncse-button--ghost {
+  background-color: transparent;
+  color: var(--color-primary-text);
+}
+
+.ncse-button--ghost:not(:disabled):hover {
+  background-color: var(--color-primary-soft);
+}
+
+/* 文字色：亮态白字深红（§6.1）；暗态 F87171 浅红底配反色文字（§2.2 填充块配反色文字，AA） */
+.ncse-button--danger {
+  background-color: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+
+.ncse-button--danger:not(:disabled):hover {
+  background-color: var(--color-danger-hover);
+}
+
+/* 加载态旋转图标（§6.1） */
+.ncse-button__spinner {
+  animation: ncse-button-spin 1s linear infinite;
+}
+
+@keyframes ncse-button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

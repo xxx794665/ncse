@@ -1,0 +1,154 @@
+/* /design 演示页布局（T0-04）：只引 token；演示框用 transform 把 fixed 子元素（BottomTab/Modal）限定在框内 */
+
+.demo-page {
+  max-width: var(--layout-max-content);
+  margin: 0 auto;
+  padding: var(--spacing-lg) var(--spacing-md) var(--spacing-3xl);
+}
+
+@media (min-width: 1024px) {
+  .demo-page {
+    padding: var(--spacing-xl) var(--spacing-lg) var(--spacing-4xl);
+  }
+}
+
+.demo-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
+}
+
+.demo-page__title {
+  margin: 0 0 var(--spacing-2xs);
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.demo-page__desc {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-tertiary);
+}
+
+.demo-page__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.demo-section {
+  margin-bottom: var(--spacing-2xl);
+}
+
+.demo-section__title {
+  margin: 0 0 var(--spacing-2xs);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.demo-section__desc {
+  margin: 0 0 var(--spacing-md);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-tertiary);
+}
+
+.demo-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.demo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.demo-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  max-width: var(--layout-max-modal);
+}
+
+.demo-text {
+  margin: 0;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.demo-question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+/* 亮暗对照：两面板强制 data-theme（tokens.css 的 [data-theme] 对任意元素生效） */
+.demo-compare {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 1024px) {
+  .demo-compare {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.demo-pane {
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  /* transform 使面板成为 fixed 子元素（BottomTab/Modal 遮罩）的定位边界，便于面板内对照 */
+  transform: translateZ(0);
+}
+
+.demo-pane__body {
+  margin-top: var(--spacing-sm);
+}
+
+/* 导航演示框：TopNav 在框内静态展示；BottomTab 经 transform 限定吸附框底 */
+.demo-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-base);
+  transform: translateZ(0);
+}
+
+.demo-frame--tab {
+  height: 240px;
+}
+
+.demo-frame__hint {
+  position: absolute;
+  top: var(--spacing-xs);
+  left: var(--spacing-sm);
+  font-size: var(--font-size-aux);
+  color: var(--color-text-tertiary);
+}
+
+/* 演示框内强制显示（组件自身按断点隐藏其一，演示页需要同屏并列） */
+.demo-frame .ncse-top-nav {
+  display: block;
+  position: static;
+}
+
+@media (min-width: 1024px) {
+  .demo-frame .ncse-bottom-tab {
+    display: flex;
+  }
+}

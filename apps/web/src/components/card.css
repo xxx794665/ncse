@@ -1,0 +1,51 @@
+/* Card（设计规范 §6.2） */
+
+.ncse-card {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--spacing-md);
+  transition:
+    box-shadow var(--duration-fast) var(--easing-standard),
+    transform var(--duration-fast) var(--easing-standard);
+}
+
+/* 内边距：移动 md，PC lg（§6.2）；断点值对应 --breakpoint-pc */
+@media (min-width: 1024px) {
+  .ncse-card {
+    padding: var(--spacing-lg);
+  }
+}
+
+.ncse-card--interactive {
+  cursor: pointer;
+}
+
+.ncse-card--interactive:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.ncse-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.ncse-card__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.ncse-card__extra {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+}

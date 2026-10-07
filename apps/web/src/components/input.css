@@ -1,0 +1,80 @@
+/* Input / Textarea / 字段外壳（设计规范 §6.3）：高 48 移动 / 40 PC 为规范定值 */
+
+.ncse-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.ncse-field__label {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+.ncse-field__error {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-text);
+}
+
+.ncse-input {
+  width: 100%;
+  height: 48px;
+  padding: 0 var(--spacing-sm);
+  background-color: var(--color-bg-base);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    box-shadow var(--duration-fast) var(--easing-standard);
+}
+
+/* PC（--breakpoint-pc）单行高 40（§6.3） */
+@media (min-width: 1024px) {
+  .ncse-input {
+    height: 40px;
+  }
+
+  .ncse-textarea {
+    height: auto;
+  }
+}
+
+.ncse-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.ncse-input:hover:not(:disabled):not(:focus) {
+  border-color: var(--color-border-strong);
+}
+
+.ncse-input:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+  border-color: var(--color-border-focus);
+}
+
+.ncse-input:disabled {
+  background-color: var(--color-bg-muted);
+  cursor: not-allowed;
+}
+
+.ncse-input--error,
+.ncse-input--error:hover:not(:disabled):not(:focus) {
+  border-color: var(--color-danger);
+}
+
+.ncse-textarea {
+  height: auto;
+  min-height: 96px;
+  padding: var(--spacing-sm);
+  line-height: var(--line-height-relaxed);
+  resize: vertical;
+}

@@ -1,0 +1,22 @@
+/* Select（§6.3 输入族）：复用 .ncse-input 形态，右侧 20px 装饰箭头 */
+
+.ncse-select {
+  position: relative;
+}
+
+.ncse-select__native {
+  appearance: none;
+  padding-right: var(--spacing-xl);
+  cursor: pointer;
+}
+
+.ncse-select__chevron {
+  position: absolute;
+  right: var(--spacing-sm);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+}

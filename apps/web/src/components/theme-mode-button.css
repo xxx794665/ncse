@@ -1,0 +1,32 @@
+/* 主题循环切换按钮（§8.2）：40px 方形 ghost 图标按钮 */
+
+.ncse-theme-cycle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-theme-cycle:hover {
+  background-color: var(--color-bg-muted);
+  color: var(--color-text-primary);
+}
+
+.ncse-theme-cycle:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-theme-cycle > svg {
+  width: 20px;
+  height: 20px;
+}

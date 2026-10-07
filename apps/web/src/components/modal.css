@@ -1,0 +1,142 @@
+/* Modal / 移动端 Sheet（§4.3 radius-xl、§6.8 shadow-lg、z 阶梯） */
+
+.ncse-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background-color: var(--color-bg-overlay);
+  animation: ncse-modal-fade var(--duration-slow) var(--easing-standard);
+}
+
+.ncse-modal {
+  position: relative;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 80vh;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow: var(--shadow-lg);
+  outline: none;
+  animation: ncse-sheet-up var(--duration-slow) var(--easing-decelerate);
+}
+
+/* PC（--breakpoint-pc）：居中对话框 */
+@media (min-width: 1024px) {
+  .ncse-modal-overlay {
+    align-items: center;
+    padding: var(--spacing-lg);
+  }
+
+  .ncse-modal {
+    width: min(100%, var(--layout-max-modal));
+    border-radius: var(--radius-xl);
+    animation-name: ncse-modal-pop;
+  }
+}
+
+.ncse-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-md) 0;
+}
+
+@media (min-width: 1024px) {
+  .ncse-modal__header {
+    padding: var(--spacing-lg) var(--spacing-lg) 0;
+  }
+}
+
+.ncse-modal__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.ncse-modal__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-modal__close:hover {
+  background-color: var(--color-bg-muted);
+  color: var(--color-text-primary);
+}
+
+.ncse-modal__close:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-modal__close > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ncse-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-md);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-primary);
+}
+
+@media (min-width: 1024px) {
+  .ncse-modal__body {
+    padding: var(--spacing-md) var(--spacing-lg);
+  }
+}
+
+.ncse-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  padding: 0 var(--spacing-md) var(--spacing-md);
+}
+
+@media (min-width: 1024px) {
+  .ncse-modal__footer {
+    padding: 0 var(--spacing-lg) var(--spacing-lg);
+  }
+}
+
+@keyframes ncse-modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes ncse-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes ncse-modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(var(--spacing-sm));
+  }
+}

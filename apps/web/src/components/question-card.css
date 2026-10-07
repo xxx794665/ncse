@@ -1,0 +1,296 @@
+/* QuestionCard（§6.5/§7.1/§7.3/§7.4）；选项徽标 20px、热区最小高 44px 为规范定值 */
+
+.ncse-question-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-2xs);
+}
+
+.ncse-question-card__index {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.ncse-question-card__meta {
+  font-size: var(--font-size-aux);
+  color: var(--color-text-tertiary);
+}
+
+.ncse-question-card__actions {
+  display: inline-flex;
+  gap: var(--spacing-2xs);
+  margin-left: auto;
+}
+
+.ncse-question-card__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-question-card__icon-btn:hover {
+  background-color: var(--color-bg-muted);
+  color: var(--color-text-primary);
+}
+
+.ncse-question-card__icon-btn:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-question-card__icon-btn > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ncse-question-card__icon-btn.is-favorite {
+  color: var(--color-warning-text);
+}
+
+.ncse-question-card__icon-btn.is-flagged {
+  color: var(--color-danger-text);
+}
+
+/* 题干：§3.3 一级阅读层（17px / stem 行高 / medium） */
+.ncse-question-card__stem {
+  margin-top: var(--spacing-md);
+  font-size: var(--font-size-stem);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-stem);
+  color: var(--color-text-primary);
+  max-width: var(--layout-max-reading);
+}
+
+/* 图片插槽（§7.3）：块级居中、max-h 480px、radius-md + border-subtle */
+.ncse-question-card__image {
+  margin-top: var(--spacing-md);
+  text-align: center;
+}
+
+.ncse-question-card__image img {
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  margin: 0 auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+/* 选项区（§7.1）：纵向列表、间距 sm、整项热区最小高 44px */
+.ncse-question-card__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+.ncse-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  min-height: 44px;
+  padding: var(--spacing-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  font-family: inherit;
+  font-size: var(--font-size-option);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-option:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-option:disabled {
+  cursor: default;
+}
+
+/* 选项字母徽标：20px 圆形、border-default、medium（§7.1） */
+.ncse-option__badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: var(--spacing-3xs);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-micro);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+}
+
+.ncse-option__badge--plain {
+  margin-top: 0;
+}
+
+/* 五态（§7.1） */
+.ncse-option--default:not(:disabled):hover {
+  background-color: var(--color-bg-muted);
+}
+
+.ncse-option--selected {
+  background-color: var(--color-primary-soft);
+  color: var(--color-primary-soft-text);
+}
+
+.ncse-option--selected .ncse-option__badge {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+
+.ncse-option--correct {
+  background-color: var(--color-success-soft);
+  color: var(--color-success-soft-text);
+}
+
+.ncse-option--correct .ncse-option__badge {
+  background-color: var(--color-success);
+  border-color: var(--color-success);
+  color: var(--color-text-inverse);
+}
+
+.ncse-option--wrong {
+  background-color: var(--color-danger-soft);
+  color: var(--color-danger-soft-text);
+}
+
+.ncse-option--wrong .ncse-option__badge {
+  background-color: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+
+/* 判分·未选的正确项：同正确态 + 1px success 描边（§7.1） */
+.ncse-option--missed {
+  background-color: var(--color-success-soft);
+  color: var(--color-success-soft-text);
+  border-color: var(--color-success);
+}
+
+.ncse-option--missed .ncse-option__badge {
+  background-color: var(--color-success);
+  border-color: var(--color-success);
+  color: var(--color-text-inverse);
+}
+
+/* 解析区（§7.4）：1px border-subtle 分隔、默认折叠 */
+.ncse-question-card__analysis {
+  margin-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.ncse-question-card__analysis-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  width: 100%;
+  padding: var(--spacing-sm) 0 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.ncse-question-card__analysis-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.ncse-question-card__analysis-toggle:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-question-card__analysis-toggle > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ncse-question-card__analysis-chevron {
+  margin-left: auto;
+  transition: transform var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-question-card__analysis-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.ncse-question-card__analysis-body {
+  padding-top: var(--spacing-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+/* ①答案行：semibold + success-text（§7.4） */
+.ncse-question-card__answer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0;
+}
+
+.ncse-question-card__answer-label {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-success-text);
+}
+
+/* ②解析正文（§3.2：16px / analysis 行高） */
+.ncse-question-card__analysis-text {
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-analysis);
+  color: var(--color-text-primary);
+  max-width: var(--layout-max-reading);
+}
+
+/* ③逐项辨析：字母徽标引导 */
+.ncse-question-card__option-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.ncse-question-card__option-analysis > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-xs);
+}
+
+/* ④知识点标签行 */
+.ncse-question-card__knowledge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+}

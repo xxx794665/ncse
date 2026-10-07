@@ -1,0 +1,56 @@
+/* StatChip 统计徽章（§6.6）：高 32、px-12、bg-muted、radius-full */
+
+.ncse-stat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  height: 32px;
+  padding: 0 var(--spacing-sm);
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.ncse-stat-chip__icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* 语义着色仅用于图标（§6.6） */
+.ncse-stat-chip__icon--default {
+  color: var(--color-text-tertiary);
+}
+
+.ncse-stat-chip__icon--primary {
+  color: var(--color-primary-text);
+}
+
+.ncse-stat-chip__icon--success {
+  color: var(--color-success-text);
+}
+
+.ncse-stat-chip__icon--warning {
+  color: var(--color-warning-text);
+}
+
+.ncse-stat-chip__icon--danger {
+  color: var(--color-danger-text);
+}
+
+.ncse-stat-chip__icon--info {
+  color: var(--color-info-text);
+}
+
+/* 数值恒 text-primary、mono + tabular-nums（§3.1、§6.6） */
+.ncse-stat-chip__value {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.ncse-stat-chip__label {
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
