@@ -1,0 +1,9 @@
+name = "ncse-api"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+# 本地开发配置（`npm run dev` = wrangler dev）。
+# 正式部署配置（子域/DNS、D1/R2 绑定、环境分离）在 T1-13 补充。
+# 凭据一律走 `wrangler secret`；本地用不入库的 .dev.vars（CLAUDE.md 安全约束）。
+[dev]
+port = 8787

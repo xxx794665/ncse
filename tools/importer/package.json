@@ -1,0 +1,15 @@
+{
+  "name": "@ncse/importer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "echo @ncse/importer: no tests yet - placeholder"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}

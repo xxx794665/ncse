@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.dev.vars
+.wrangler/
+coverage/
+.zcode/
+.mimosa/
+*.log
