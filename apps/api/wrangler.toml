@@ -7,3 +7,12 @@ compatibility_date = "2026-06-01"
 # 凭据一律走 `wrangler secret`；本地用不入库的 .dev.vars（CLAUDE.md 安全约束）。
 [dev]
 port = 8787
+
+# D1 数据库绑定（T1-02 落地；schema 见 src/db/schema/，迁移产物见 apps/api/migrations/）。
+# database_id 为刻意选用的全零占位值：本地 `wrangler dev` / `--local` 模式不校验真实 ID、不访问远端；
+# T1-13 部署时替换为 `wrangler d1 create ncse-db` 产出的真实 ID（本任务不创建任何远程资源）。
+[[d1_databases]]
+binding = "DB"
+database_name = "ncse-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
