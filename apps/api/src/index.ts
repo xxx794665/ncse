@@ -24,13 +24,21 @@ app.route('/api', apiRoute)
 
 /**
  * HTTPException 状态码 → 稳定语义错误码（不随 message 波动，客户端据此分支）。
- * 当前仅覆盖已定义语义（@ncse/shared API_ERROR_CODES）；T1-03 认证落地时按需扩充（如 401 → unauthorized）。
+ * T1-03 已扩充认证域：400 → bad_request、401 → unauthorized、409 → conflict。
  */
 function errorCodeForStatus(status: number): ApiErrorCode {
-  if (status === 404) {
-    return API_ERROR_CODES.not_found
+  switch (status) {
+    case 400:
+      return API_ERROR_CODES.bad_request
+    case 401:
+      return API_ERROR_CODES.unauthorized
+    case 404:
+      return API_ERROR_CODES.not_found
+    case 409:
+      return API_ERROR_CODES.conflict
+    default:
+      return API_ERROR_CODES.internal_error
   }
-  return API_ERROR_CODES.internal_error
 }
 
 // 统一错误处理：所有异常在此收敛为 ApiErrorBody 信封（工程规范 §3：不吞错、不裸 catch）。

@@ -34,11 +34,17 @@ export interface ApiErrorBody {
 
 /**
  * API 稳定语义错误码（字符串字面量常量，客户端不得依赖 HTTP status 文本）。
- * T1-03 认证落地时按需扩充（如 unauthorized、bad_request 等）。
+ * T1-03 已扩充 bad_request / unauthorized / conflict。
  */
 export const API_ERROR_CODES = {
+  /** 请求参数不合法（400：校验失败、请求体缺失或不可解析） */
+  bad_request: 'bad_request',
+  /** 未认证或认证失效（401：Bearer 缺失/无效/过期，用户名或密码错误） */
+  unauthorized: 'unauthorized',
   /** 资源不存在（404） */
   not_found: 'not_found',
+  /** 资源冲突（409：如用户名已被注册） */
+  conflict: 'conflict',
   /** 未预期的服务端错误（5xx） */
   internal_error: 'internal_error',
 } as const
@@ -89,3 +95,39 @@ export type ReinforceStatus = 'pending' | 'resolved'
 
 /** 掌握度统计目标颗粒：知识点 / 模块（mastery_stats 多态目标） */
 export type MasteryTargetType = 'knowledge_point' | 'module'
+
+/* ============ 认证 DTO（T1-03 定稿，前端 T1-08 直接复用） ============ */
+
+/**
+ * 登录后对外的当前用户视图。
+ * 不含 password_hash 等敏感字段；role 取值与 users.role 列
+ * （apps/api/src/db/schema/account.ts 的 UserRole）对齐，两端勿单方扩值。
+ */
+export interface AuthUser {
+  id: number
+  username: string
+  role: 'user' | 'admin'
+}
+
+/** POST /api/auth/register 请求体 */
+export interface RegisterRequest {
+  username: string
+  password: string
+}
+
+/** POST /api/auth/login 请求体 */
+export interface LoginRequest {
+  username: string
+  password: string
+}
+
+/** 注册/登录成功响应：token 为 Bearer JWT（前端存 localStorage，请求附 Authorization 头） */
+export interface AuthResponse {
+  token: string
+  user: AuthUser
+}
+
+/** GET /api/auth/me 响应体（受保护路由） */
+export interface MeResponse {
+  user: AuthUser
+}

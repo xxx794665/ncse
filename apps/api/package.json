@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
-    "test": "echo @ncse/api: no tests yet - placeholder"
+    "test": "vitest run"
   },
   "dependencies": {
     "@ncse/shared": "*",
@@ -15,9 +15,11 @@
     "hono": "^4.13.13"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.3.7",
     "@cloudflare/workers-types": "^5.20261007.1",
     "drizzle-kit": "^0.31.11",
     "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
     "wrangler": "^4.147.0"
   }
 }

@@ -1,0 +1,8 @@
+# .dev.vars 模板（wrangler dev 本地环境变量；.dev.vars 本体已在 .gitignore，绝不提交）。
+# 用法：把本文件复制为 apps/api/.dev.vars，将占位值替换为本地随机生成的密钥，例如：
+#   cd apps/api && node -e "console.log('JWT_SECRET=' + require('node:crypto').randomBytes(32).toString('hex'))"
+# 纪律（CLAUDE.md 安全约束）：真实密钥只允许出现在 .dev.vars 或 `wrangler secret put` 注入的
+# 环境里；源码、示例、测试中一律不得出现可用凭据字面量（下方值即刻意不可用的占位）。
+
+# JWT 签名密钥（HS256）：生产环境用 `wrangler secret put JWT_SECRET` 注入
+JWT_SECRET=PLACEHOLDER-REPLACE-WITH-LOCAL-RANDOM-SECRET
