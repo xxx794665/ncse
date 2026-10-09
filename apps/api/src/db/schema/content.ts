@@ -92,6 +92,8 @@ export const questionGroups = sqliteTable(
     moduleId: integer('module_id')
       .notNull()
       .references(() => modules.id, { onDelete: 'cascade' }),
+    /** 导入自然键（'<试卷文件相对路径>#<材料序号>'，如 '06-资料分析/xx.md#1'；同模块内唯一，幂等 upsert 依据，T1-15 补 T1-02 自然键缺口） */
+    sourceKey: text('source_key').notNull(),
     /** 材料富片段（文本+图片引用混合） */
     material: text('material', { mode: 'json' }).$type<RichContent>().notNull(),
     /** 同组共享来源：年份（如 2024） */
@@ -103,7 +105,10 @@ export const questionGroups = sqliteTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (table) => [index('question_groups_module_year_idx').on(table.moduleId, table.year)],
+  (table) => [
+    uniqueIndex('question_groups_module_source_key_uq').on(table.moduleId, table.sourceKey),
+    index('question_groups_module_year_idx').on(table.moduleId, table.year),
+  ],
 )
 
 /**

@@ -8,6 +8,13 @@
       "when": 1791429458165,
       "tag": "0000_condemned_alex_power",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791520109766,
+      "tag": "0001_confused_mercury",
+      "breakpoints": true
     }
   ]
 }
