@@ -118,3 +118,41 @@ export interface RunImportResult {
   /** 写出的产物文件（绝对路径） */
   wrote: string[]
 }
+
+/* ============ 入库阶段（T1-15：JSON 产物 → 确定性 SQL） ============ */
+
+/** runDbStage 入参（db 子命令与测试直调共用） */
+export interface DbStageOptions {
+  /** runImport 产物目录（含 import-manifest.json 与 modules/*.json）；生成的 import.sql 亦写回本目录 */
+  productsDir: string
+  /** import_runs 版本号（正整数；同 version 重跑幂等覆盖） */
+  version: number
+  /** true = 跳过数据质量门、全量导入（默认 false：门控题目不进 SQL） */
+  force?: boolean
+}
+
+/** 入库统计（import_runs.stats 同结构） */
+export interface DbStageStats {
+  /** 实际写入 questions 的行数（不含被门控跳过的题目） */
+  questions: number
+  /** 实际写入 question_groups 的行数（不含有效题为空的题组） */
+  questionGroups: number
+  /** 图片入库数（T1-05 实现，当前恒 0） */
+  images: number
+  /** 知识点入库数（打标任务实现，当前恒 0） */
+  knowledgePoints: number
+}
+
+/** runDbStage 返回值（SQL 文本与写入信息，供测试断言） */
+export interface DbStageResult {
+  /** 生成的 SQL 全文（UTF-8 无 BOM；同产物 + 同 version 逐字节确定） */
+  sql: string
+  /** SQL 写入路径（绝对路径；恒为产物目录下的 import.sql） */
+  sqlPath: string
+  /** 数据质量门跳过的题目 qid（--force 时为空数组） */
+  skippedQids: string[]
+  /** 实际导入统计（import_runs 行的 stats 同值） */
+  stats: DbStageStats
+  /** 输入内容摘要（sha256 hex，modules/*.json 按 moduleOrder 拼接计算） */
+  inputDigest: string
+}

@@ -1,34 +1,56 @@
 /**
- * @ncse/importer CLI 入口（T1-04 文本导入）。
- * 用法：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
+ * @ncse/importer CLI 入口（T1-04 文本导入；T1-15 增 db 入库子命令）。
+ * parse 模式：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
+ * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
+ * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库）
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
- * 退出码：0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
- * 本工具只读本地文件、不做任何网络请求；D1 入库与图片/视觉处理属 T1-05/T1-06。
+ * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
+ * db 0 = SQL 生成成功（含跳过质量问题题目）；1 = 产物结构无效（manifest 缺失/模块 JSON 损坏）；
+ * 2 = 用法错误（缺参数、version 非正整数、products 目录不存在）。
+ * 本工具只读本地文件、不做任何网络请求。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
-import type { RunImportResult } from './types.js'
+import type { DbStageResult, RunImportResult } from './types.js'
 
 const USAGE =
   '用法：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录，默认 .import-out>] --version <导入版本号>'
 
+const DB_USAGE =
+  '用法：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]（SQL 生成至 <产物目录>/import.sql）'
+
 /** 问题清单打印上限（其余完整记录在 import-manifest.json） */
 const PRINT_ISSUE_LIMIT = 20
 
-/** CLI 选项值（input/version 必填校验在 main 内做） */
+/** CLI 选项值（input/version 必填校验在命令函数内做） */
 interface CliValues {
   input?: string
   output?: string
   version?: string
 }
 
+/** db 子命令选项值 */
+interface DbCliValues {
+  products?: string
+  version?: string
+  force?: boolean
+}
+
 /**
  * CLI 主函数（供测试直接调用；返回退出码，不直接 process.exit 以保证输出冲刷）。
+ * argv[0] === 'db' 进入 db 入库模式，其余参数照旧为 parse 模式（行为向后兼容）。
  */
 export function main(argv: string[]): number {
+  if (argv[0] === 'db') return runDbCommand(argv.slice(1))
+  return runParseCommand(argv)
+}
+
+/** parse 模式（T1-04 原行为）：文本导入 → JSON 中间产物 */
+function runParseCommand(argv: string[]): number {
   let values: CliValues
   try {
     values = parseArgs({
@@ -86,6 +108,73 @@ export function main(argv: string[]): number {
   const hidden = result.manifest.issues.length - PRINT_ISSUE_LIMIT
   if (hidden > 0) console.error(`…另有 ${hidden} 条问题未打印（见 import-manifest.json）`)
   return result.hardErrors > 0 ? 1 : 0
+}
+
+/** db 模式（T1-15）：JSON 产物 → 确定性幂等 upsert SQL（写回 <产物目录>/import.sql） */
+function runDbCommand(argv: string[]): number {
+  let values: DbCliValues
+  try {
+    values = parseArgs({
+      args: argv,
+      options: {
+        products: { type: 'string' },
+        version: { type: 'string' },
+        force: { type: 'boolean' },
+      },
+    }).values
+  } catch (err) {
+    console.error(`参数错误：${err instanceof Error ? err.message : String(err)}\n${DB_USAGE}`)
+    return 2
+  }
+  const products = values.products
+  const version = values.version
+  if (products === undefined || products === '' || version === undefined || version === '') {
+    console.error(DB_USAGE)
+    return 2
+  }
+  if (!/^[0-9]+$/.test(version) || Number(version) <= 0) {
+    console.error(`--version 须为正整数：${version}`)
+    return 2
+  }
+  const productsAbs = path.resolve(products)
+  let isDir = false
+  try {
+    isDir = fs.statSync(productsAbs).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) {
+    console.error(`产物目录不存在或不是目录：${productsAbs}`)
+    return 2
+  }
+
+  let result: DbStageResult
+  try {
+    result = runDbStage({
+      productsDir: productsAbs,
+      version: Number(version),
+      force: values.force,
+    })
+  } catch (err) {
+    // 产物结构无效 → 1（可由重新 parse 修复）；路径越界按用法错误 → 2；其余异常如实上抛
+    if (err instanceof InvalidProductsError) {
+      console.error(err.message)
+      return 1
+    }
+    if (err instanceof ImportPathEscapeError) {
+      console.error(err.message)
+      return 2
+    }
+    throw err
+  }
+  console.log(`入库 SQL 已生成：${result.sqlPath}`)
+  console.log(`导入统计：题目 ${result.stats.questions}，题组 ${result.stats.questionGroups}`)
+  if (result.skippedQids.length > 0) {
+    console.error(
+      `数据质量门：跳过题目 ${result.skippedQids.length} 道（--force 可强制导入，问题明细见 import-manifest.json）`,
+    )
+  }
+  return 0
 }
 
 // 直接以 node 运行时自动执行（被测试 import 时不触发）
