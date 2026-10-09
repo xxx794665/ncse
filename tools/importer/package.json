@@ -3,13 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./src/main.ts",
+  "main": "./dist/main.js",
   "scripts": {
-    "check": "tsc --noEmit",
-    "test": "echo @ncse/importer: no tests yet - placeholder"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
   },
   "devDependencies": {
+    "@ncse/shared": "*",
     "@types/node": "^26.6.4",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   }
 }
