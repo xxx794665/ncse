@@ -156,3 +156,77 @@ export interface DbStageResult {
   /** 输入内容摘要（sha256 hex，modules/*.json 按 moduleOrder 拼接计算） */
   inputDigest: string
 }
+
+/* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写） ============ */
+
+/** runImagesStage 入参（images 子命令与测试直调共用） */
+export interface ImagesStageOptions {
+  /** runImport 产物目录（含 import-manifest.json 与 modules/*.json）；r2/ 工件与 images-manifest.json 亦写回本目录 */
+  productsDir: string
+  /** 源仓库根目录（绝对或相对路径）；缺省读 import-manifest.json 的 input 字段，显式传入则覆盖（源仓库迁移场景） */
+  inputDir?: string
+}
+
+/** 图片阶段统计（images-manifest.json 的 stats 同结构；口径为本阶段实际发生的动作——重跑时 alreadyKeyed 上升、compressed/passthrough 归零） */
+export interface ImagesStageStats {
+  /** 图片段总出现次数（题干/选项/解析/材料四处宿主合计；含 alreadyKeyed 已重写段） */
+  references: number
+  /** 图片映射条数（不同源文件数，按首见去重） */
+  images: number
+  /** 压缩为 webp 的源图数 */
+  compressed: number
+  /** gif 原字节透传的源图数 */
+  passthrough: number
+  /** 已是内容寻址键且 r2/ 工件在位的图片段数（幂等重跑口径） */
+  alreadyKeyed: number
+  /** error 级问题条数（>0 时 CLI 退出码 1） */
+  errors: number
+  /** warning 级问题条数 */
+  warnings: number
+}
+
+/** 单个源图 → 工件映射（images-manifest.json 的 images 数组条目；首见序） */
+export interface ImageMapping {
+  /** 源文件在输入根内的 POSIX 相对路径（首见去重键，如 '90-图片/题目图/<hex>.png'） */
+  source: string
+  /** 内容寻址键（'img/<源字节 sha256>.webp' 或 '.gif'；DB 存裸键，访问 URL 由服务层构造——ADR-0007） */
+  key: string
+  /** 被引用次数（同一源文件跨试卷/跨段累计） */
+  refs: number
+  /** 源文件字节数 */
+  origBytes: number
+  /** 工件字节数（压缩后大小；透传与 origBytes 相同） */
+  outBytes: number
+  /** 原始像素宽（sharp metadata） */
+  width: number
+  /** 原始像素高（sharp metadata） */
+  height: number
+  /** 源格式（sharp metadata.format，如 'png'/'gif'） */
+  format: string
+}
+
+/** 图片阶段产物 images-manifest.json 结构（确定性：同产物 + 同输入 → 逐字节相同；产物无变更的重跑不重写本文件） */
+export interface ImagesManifest {
+  /** 导入版本号（取自 import-manifest.json；本阶段不回写 import-manifest.json） */
+  version: string
+  /** 实际使用的输入目录（绝对路径，反斜杠规范化正斜杠；--input 覆盖时为其解析值） */
+  input: string
+  stats: ImagesStageStats
+  /** 源图映射（首见序：模块序 → 试卷序 → items 序 → 段序） */
+  images: ImageMapping[]
+  /** 图片阶段问题清单（收集顺序同上，确定性文本无时间戳） */
+  issues: ImportIssue[]
+}
+
+/** runImagesStage 返回值（供 CLI 判退出码与测试断言） */
+export interface ImagesStageResult {
+  stats: ImagesStageStats
+  /** severity 'error' 的条数（>0 时 CLI 退出码 1） */
+  hardErrors: number
+  /** 图片阶段问题清单（与 images-manifest.json 的 issues 同内容） */
+  issues: ImportIssue[]
+  /** 写出的产物文件（绝对路径；含 r2 工件、被改写的模块 JSON 与 images-manifest.json） */
+  wrote: string[]
+  /** 被改写的模块 JSON 路径列表（本次运行实际发生图片段 path 重写的文件） */
+  rewrote: string[]
+}

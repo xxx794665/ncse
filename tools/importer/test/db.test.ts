@@ -364,27 +364,27 @@ describe('CLI db 子命令（main）', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
   }
 
-  it('用法错误 → 2（缺参数、version 非正整数、products 目录不存在）', () => {
+  it('用法错误 → 2（缺参数、version 非正整数、products 目录不存在）', async () => {
     spyConsole()
-    expect(main(['db'])).toBe(2)
-    expect(main(['db', '--products', cleanProducts])).toBe(2)
-    expect(main(['db', '--products', cleanProducts, '--version'])).toBe(2)
-    expect(main(['db', '--products', cleanProducts, '--version', 'abc'])).toBe(2)
-    expect(main(['db', '--products', cleanProducts, '--version', '0'])).toBe(2)
-    expect(main(['db', '--products', path.join(outDir, 'no-such-products'), '--version', '3'])).toBe(2)
+    expect(await main(['db'])).toBe(2)
+    expect(await main(['db', '--products', cleanProducts])).toBe(2)
+    expect(await main(['db', '--products', cleanProducts, '--version'])).toBe(2)
+    expect(await main(['db', '--products', cleanProducts, '--version', 'abc'])).toBe(2)
+    expect(await main(['db', '--products', cleanProducts, '--version', '0'])).toBe(2)
+    expect(await main(['db', '--products', path.join(outDir, 'no-such-products'), '--version', '3'])).toBe(2)
   })
 
-  it('clean 产物 → 0 且 SQL 落盘至产物目录 import.sql', () => {
+  it('clean 产物 → 0 且 SQL 落盘至产物目录 import.sql', async () => {
     spyConsole()
-    expect(main(['db', '--products', cleanProducts, '--version', '3'])).toBe(0)
+    expect(await main(['db', '--products', cleanProducts, '--version', '3'])).toBe(0)
     const sqlPath = path.join(cleanProducts, 'import.sql')
     expect(fs.existsSync(sqlPath)).toBe(true)
     expect(fs.readFileSync(sqlPath, 'utf8')).toContain('-- ncse 导入入库 SQL：version=3')
   })
 
-  it('error 产物默认 → 0（跳过质量问题题目不是失败）；产物结构无效 → 1', () => {
+  it('error 产物默认 → 0（跳过质量问题题目不是失败）；产物结构无效 → 1', async () => {
     spyConsole()
-    expect(main(['db', '--products', errorProducts, '--version', '3'])).toBe(0)
-    expect(main(['db', '--products', path.join(outDir, 'empty-products'), '--version', '3'])).toBe(1)
+    expect(await main(['db', '--products', errorProducts, '--version', '3'])).toBe(0)
+    expect(await main(['db', '--products', path.join(outDir, 'empty-products'), '--version', '3'])).toBe(1)
   })
 })

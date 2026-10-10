@@ -1,5 +1,6 @@
 /**
  * CLI/管线集成测试（T1-04）：runImport 编排（统计/去重/产物写出）+ main 退出码
+ * （T1-05 起 main 为 async——images 子命令含 sharp 异步压缩，断言一律 await）
  * + 幂等性（同输入 + 同版本号两次运行产物逐字节一致）。
  * 夹具全部为合成虚构题目；产物写入系统临时目录，测试后清理。
  */
@@ -221,21 +222,21 @@ describe('CLI 退出码（main）', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
   }
 
-  it('缺参数 → 2', () => {
+  it('缺参数 → 2', async () => {
     spyConsole()
-    expect(main([])).toBe(2)
-    expect(main(['--input', cleanInput])).toBe(2)
+    expect(await main([])).toBe(2)
+    expect(await main(['--input', cleanInput])).toBe(2)
   })
 
-  it('输入目录不存在 → 2', () => {
+  it('输入目录不存在 → 2', async () => {
     spyConsole()
-    expect(main(['--input', path.join(outDir, 'no-such-dir'), '--version', 'v'])).toBe(2)
+    expect(await main(['--input', path.join(outDir, 'no-such-dir'), '--version', 'v'])).toBe(2)
   })
 
-  it('干净输入 → 0；含硬错误输入 → 1', () => {
+  it('干净输入 → 0；含硬错误输入 → 1', async () => {
     spyConsole()
-    expect(main(['--input', cleanInput, '--output', path.join(outDir, 'cli-clean'), '--version', 'v'])).toBe(0)
-    expect(main(['--input', errorInput, '--output', path.join(outDir, 'cli-err'), '--version', 'v'])).toBe(1)
+    expect(await main(['--input', cleanInput, '--output', path.join(outDir, 'cli-clean'), '--version', 'v'])).toBe(0)
+    expect(await main(['--input', errorInput, '--output', path.join(outDir, 'cli-err'), '--version', 'v'])).toBe(1)
   })
 })
 
