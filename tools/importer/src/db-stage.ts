@@ -6,6 +6,9 @@
  *   c. 题目 upsert（自然键 qid；题组题 group_id 经 source_key 子查询链接，独立题 NULL）；
  *   d. import_runs 行（version 幂等覆盖；input_digest 为 modules/*.json 内容指纹）；
  *   e. 孤儿题组清理（每个涉及模块一条，置于题目 upsert 之后）。
+ * stats.images 口径（T1-05 阶段 B 做实）：实际进 SQL 的题目（题干/选项内容/解析）
+ * 与题组（材料）富片段中 image 段 path 的去重集合大小——只统计不改 SQL 语句语义
+ * （唯一文本变化是 import_runs 行 stats JSON 的 images 数值）。
  * 数据质量门：manifest.issues 中 severity 'error' 且命中 GATING_ISSUE_CODES 的题目
  * 默认不进 SQL（--force 覆盖）；跳过名单由本函数返回、CLI 负责报告。
  * SQL 文本规范：字符串字面量仅做 ' → '' 转义；每条语句一行、以 ';' 结尾；
@@ -84,6 +87,20 @@ interface DbPaper {
 /** isDbQuestion 类型守卫（items 平铺混排，与解析产物同构） */
 function isDbQuestion(item: DbQuestion | DbGroup): item is DbQuestion {
   return 'qid' in item
+}
+
+/**
+ * 收集富片段数组中 image 段的 path 入去重集合（stats.images 口径）。
+ * 防御式收窄：仅 type==='image' 且 path 为字符串的段计入；SQL 列值本身不做
+ * 段级结构校验（保持既有语义不变），此处不因畸形段报错或计数。
+ */
+function collectImagePaths(content: unknown, sink: Set<string>): void {
+  if (!Array.isArray(content)) return
+  for (const segment of content) {
+    if (typeof segment !== 'object' || segment === null || Array.isArray(segment)) continue
+    const record = segment as Record<string, unknown>
+    if (record['type'] === 'image' && typeof record['path'] === 'string') sink.add(record['path'])
+  }
 }
 
 /* ============ 产物读取与结构校验（宽松类型 → 强类型，坏结构抛 InvalidProductsError） ============ */
@@ -359,6 +376,8 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
 
   // ---- SQL 语句序（顺序固定，见文件头注释 a→e） ----
   const statements: string[] = []
+  /** 实际进 SQL 的图片段 path 去重集合（stats.images 口径；含题组材料，重写后为内容寻址键天然去重） */
+  const imagePaths = new Set<string>()
 
   // a. 分类体系 upsert：考试类型、科目、六模块（全量 upsert，与产物模块覆盖面无关）
   statements.push(examTypeUpsert(), subjectUpsert())
@@ -378,6 +397,7 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
         const sourceKey = `${paper.file}#${item.index}`
         statements.push(groupUpsert(code, sourceKey, item))
         questionGroups++
+        collectImagePaths(item.material, imagePaths)
         for (const qid of validQids) groupOfQid.set(qid, sourceKey)
       }
     }
@@ -391,15 +411,23 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
         if (!isDbQuestion(item) || skipped.has(item.qid)) continue
         statements.push(questionUpsert(code, paper, item, groupOfQid.get(item.qid)))
         questions++
+        collectImagePaths(item.stem, imagePaths)
+        if (Array.isArray(item.options)) {
+          for (const option of item.options) {
+            if (typeof option !== 'object' || option === null) continue
+            collectImagePaths((option as Record<string, unknown>)['content'], imagePaths)
+          }
+        }
+        collectImagePaths(item.analysis, imagePaths)
       }
     }
   }
 
-  // d. import_runs 行（实际导入统计；images/knowledgePoints 当前恒 0）
+  // d. import_runs 行（实际导入统计；images 为进 SQL 的图片段 path 去重计数，knowledgePoints 恒 0）
   const stats: DbStageStats = {
     questions,
     questionGroups,
-    images: 0,
+    images: imagePaths.size,
     knowledgePoints: 0,
   }
   statements.push(importRunUpsert(options.version, inputDigest, stats))

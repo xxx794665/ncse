@@ -137,7 +137,7 @@ export interface DbStageStats {
   questions: number
   /** 实际写入 question_groups 的行数（不含有效题为空的题组） */
   questionGroups: number
-  /** 图片入库数（T1-05 实现，当前恒 0） */
+  /** 实际进 SQL 的图片数：题目（题干/选项/解析）与题组（材料）富片段中 image 段 path 的去重集合大小（T1-05 阶段 B 做实） */
   images: number
   /** 知识点入库数（打标任务实现，当前恒 0） */
   knowledgePoints: number
@@ -157,7 +157,7 @@ export interface DbStageResult {
   inputDigest: string
 }
 
-/* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写） ============ */
+/* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写；阶段 B 增 R2 上传） ============ */
 
 /** runImagesStage 入参（images 子命令与测试直调共用） */
 export interface ImagesStageOptions {
@@ -165,6 +165,14 @@ export interface ImagesStageOptions {
   productsDir: string
   /** 源仓库根目录（绝对或相对路径）；缺省读 import-manifest.json 的 input 字段，显式传入则覆盖（源仓库迁移场景） */
   inputDir?: string
+  /** R2 桶名（CLI --bucket 传入，是参数不是凭据）；出现即启用上传：r2/ 工件全量 put（幂等覆盖，重跑安全） */
+  bucket?: string
+  /** true = wrangler 本地态（--local，离线冒烟）；默认远端，凭据走 wrangler 本机 OAuth（源码零凭据） */
+  local?: boolean
+  /** 上传并发上限（默认 4；CLI 校验 2–16，直调越界值按 [2,16] 夹取） */
+  concurrency?: number
+  /** 上传 put 执行器注入点（缺省真 spawn 仓库根 wrangler.js；测试注入替身以免真调 wrangler） */
+  runPut?: R2PutRunner
 }
 
 /** 图片阶段统计（images-manifest.json 的 stats 同结构；口径为本阶段实际发生的动作——重跑时 alreadyKeyed 上升、compressed/passthrough 归零） */
@@ -221,12 +229,51 @@ export interface ImagesManifest {
 /** runImagesStage 返回值（供 CLI 判退出码与测试断言） */
 export interface ImagesStageResult {
   stats: ImagesStageStats
-  /** severity 'error' 的条数（>0 时 CLI 退出码 1） */
+  /** severity 'error' 的条数（含上传失败；>0 时 CLI 退出码 1） */
   hardErrors: number
   /** 图片阶段问题清单（与 images-manifest.json 的 issues 同内容） */
   issues: ImportIssue[]
-  /** 写出的产物文件（绝对路径；含 r2 工件、被改写的模块 JSON 与 images-manifest.json） */
+  /** 写出的产物文件（绝对路径；含 r2 工件、被改写的模块 JSON 与 images-manifest.json；上传不写本地文件） */
   wrote: string[]
   /** 被改写的模块 JSON 路径列表（本次运行实际发生图片段 path 重写的文件） */
   rewrote: string[]
+  /** 上传统计切片（仅启用 --bucket 时存在；上传成功且无其他变更时本次不写任何文件） */
+  upload?: { uploaded: number; failed: number }
+}
+
+/* ============ R2 上传（T1-05 阶段 B：r2/ 工件区 → wrangler r2 object put） ============ */
+
+/**
+ * 上传 put 执行器（注入点）：args 为 wrangler 子命令参数（不含 wrangler.js 路径本身），
+ * 即 ['r2','object','put','<bucket>/<key>','--file',<对象键（相对 cwd）>,'--content-type',<mime>[,'--local']）；
+ * cwd 为 r2/ 工件根（--file 以相对键引用工件，绝对路径不进 argv——全部动态参数
+ * 均为白名单字符集内的值，汇点处另有结构化复检）。默认实现经 node 直启仓库根
+ * wrangler.js 真 spawn（参数数组直传、显式 shell:false）；测试注入替身记录调用并
+ * 可控失败，不触发真进程。code 为进程退出码（0 = 成功）；stderr 为错误诊断文本
+ * （默认实现收集子进程 stderr，为空时回退 stdout——wrangler 诊断可能走任一流）。
+ */
+export type R2PutRunner = (args: string[], cwd: string) => Promise<{ code: number; stderr: string }>
+
+/** uploadArtifacts 入参 */
+export interface R2UploadOptions {
+  /** 产物目录（其下 r2/ 为待传工件区；目录不存在 = 无图可传的合法状态） */
+  productsDir: string
+  /** R2 桶名（CLI 参数而非凭据） */
+  bucket: string
+  /** true = wrangler 本地态（--local，离线冒烟）；默认远端 */
+  local?: boolean
+  /** 并发上限（默认 4；CLI 校验 2–16，直调越界值按 [2,16] 夹取，池永不因 0/负值挂起） */
+  concurrency?: number
+}
+
+/** uploadArtifacts 返回值（结果一律按输入序聚合：并发完成序不确定，产出顺序必须确定） */
+export interface R2UploadResult {
+  /** 上传成功对象数 */
+  uploaded: number
+  /** 上传失败对象数（退出码非 0） */
+  failed: number
+  /** 全部对象键（输入序 = r2/ 遍历排序序；含失败者） */
+  keys: string[]
+  /** 上传问题清单（输入序；r2_upload_failed 错误级 issue） */
+  issues: ImportIssue[]
 }

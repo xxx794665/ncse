@@ -4,17 +4,22 @@
  * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
  * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库）
  * images 模式：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>]
+ * [--bucket <R2 桶名>] [--local] [--concurrency <2-16 默认 4>]
  * （压缩工件写至 <产物目录>/r2/，模块 JSON 图片段 path 原位重写为内容寻址键，
  * 问题清单与映射记 <产物目录>/images-manifest.json；--input 覆盖 manifest 登记的
- * 输入目录（源仓库迁移场景）。R2 上传属阶段 B——本子命令不做任何网络操作）
+ * 输入目录（源仓库迁移场景）。--bucket 出现即启用 R2 上传（T1-05 阶段 B）：
+ * r2/ 工件全量 `wrangler r2 object put`（幂等覆盖，重跑安全）；--local 为
+ * wrangler 本地态（离线冒烟），默认远端——凭据走 wrangler 本机 OAuth，源码零凭据；
+ * wrangler.js 经 node 直启仓库根 node_modules，缺失时本命令退出 2。）
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目）；1 = 产物结构无效（manifest 缺失/模块 JSON 损坏）；
  * 2 = 用法错误（缺参数、version 非正整数、products 目录不存在）。
- * images 0 = 图片阶段成功（允许有 warning）；1 = 图片问题清单存在 error 或产物结构无效；
- * 2 = 用法错误（缺参数、products/input 目录不存在、路径越界）。
- * 本工具只读本地文件、不做任何网络请求。
- * main 为 async（images 阶段含 sharp 异步压缩）；测试与 CLI 入口均 await 其退出码。
+ * images 0 = 图片阶段成功（允许有 warning）；1 = 图片或上传统计存在 error 或产物结构无效；
+ * 2 = 用法错误（缺参数、products/input 目录不存在、路径越界、--local/--concurrency
+ * 无 --bucket、--concurrency 越界 2–16、wrangler 未安装、桶名或对象键不合规）。
+ * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求。
+ * main 为 async（images 阶段含 sharp 异步压缩与子进程上传）；测试与 CLI 入口均 await 其退出码。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,6 +28,7 @@ import { parseArgs } from 'node:util'
 import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { runImagesStage, InvalidInputDirError } from './image-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
+import { InvalidUploadTargetError, MissingWranglerError } from './r2-upload.js'
 import type { DbStageResult, ImagesStageResult, RunImportResult } from './types.js'
 
 const USAGE =
@@ -32,7 +38,7 @@ const DB_USAGE =
   '用法：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]（SQL 生成至 <产物目录>/import.sql）'
 
 const IMAGES_USAGE =
-  '用法：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>]（工件写至 <产物目录>/r2/，路径重写写回 modules/*.json）'
+  '用法：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>] [--bucket <R2 桶名> [--local] [--concurrency <2-16 默认 4>]]（工件写至 <产物目录>/r2/，路径重写写回 modules/*.json，--bucket 启用 R2 上传）'
 
 /** 问题清单打印上限（其余完整记录在 import-manifest.json / images-manifest.json） */
 const PRINT_ISSUE_LIMIT = 20
@@ -55,6 +61,9 @@ interface DbCliValues {
 interface ImagesCliValues {
   products?: string
   input?: string
+  bucket?: string
+  local?: boolean
+  concurrency?: string
 }
 
 /**
@@ -196,7 +205,7 @@ function runDbCommand(argv: string[]): number {
   return 0
 }
 
-/** images 模式（T1-05 阶段 A）：产物图片段 → 压缩工件 + 内容寻址键 + 路径重写 */
+/** images 模式（T1-05）：产物图片段 → 压缩工件 + 内容寻址键 + 路径重写 +（--bucket）R2 上传 */
 async function runImagesCommand(argv: string[]): Promise<number> {
   let values: ImagesCliValues
   try {
@@ -205,6 +214,9 @@ async function runImagesCommand(argv: string[]): Promise<number> {
       options: {
         products: { type: 'string' },
         input: { type: 'string' },
+        bucket: { type: 'string' },
+        local: { type: 'boolean' },
+        concurrency: { type: 'string' },
       },
     }).values
   } catch (err) {
@@ -215,6 +227,26 @@ async function runImagesCommand(argv: string[]): Promise<number> {
   if (products === undefined || products === '') {
     console.error(IMAGES_USAGE)
     return 2
+  }
+  // 上传相关旋钮仅随 --bucket 启用（出现即上传）；空桶名/非整数或越界并发为用法错误
+  const bucket = values.bucket
+  const concurrency = values.concurrency
+  if (bucket === undefined && (values.local === true || concurrency !== undefined)) {
+    console.error(`--local/--concurrency 仅在 --bucket 启用上传时可用\n${IMAGES_USAGE}`)
+    return 2
+  }
+  if (bucket !== undefined) {
+    if (bucket === '') {
+      console.error(`--bucket 须为非空桶名`)
+      return 2
+    }
+    if (
+      concurrency !== undefined &&
+      (!/^[0-9]+$/.test(concurrency) || Number(concurrency) < 2 || Number(concurrency) > 16)
+    ) {
+      console.error(`--concurrency 须为 2–16 的整数：${concurrency}`)
+      return 2
+    }
   }
   const productsAbs = path.resolve(products)
   let isDir = false
@@ -230,14 +262,26 @@ async function runImagesCommand(argv: string[]): Promise<number> {
 
   let result: ImagesStageResult
   try {
-    result = await runImagesStage({ productsDir: productsAbs, inputDir: values.input })
+    result = await runImagesStage({
+      productsDir: productsAbs,
+      inputDir: values.input,
+      bucket,
+      local: values.local,
+      concurrency: concurrency === undefined ? undefined : Number(concurrency),
+    })
   } catch (err) {
-    // 产物结构无效 → 1（可由重新 parse 修复）；输入目录缺失/路径越界按用法错误 → 2；其余异常如实上抛
+    // 产物结构无效 → 1（可由重新 parse 修复）；输入目录缺失/路径越界按用法错误 → 2；
+    // wrangler 未安装/桶名或对象键不合规（白名单外）按用法级错误 → 2；其余异常如实上抛
     if (err instanceof InvalidProductsError) {
       console.error(err.message)
       return 1
     }
-    if (err instanceof InvalidInputDirError || err instanceof ImportPathEscapeError) {
+    if (
+      err instanceof InvalidInputDirError ||
+      err instanceof ImportPathEscapeError ||
+      err instanceof MissingWranglerError ||
+      err instanceof InvalidUploadTargetError
+    ) {
       console.error(err.message)
       return 2
     }
@@ -247,6 +291,10 @@ async function runImagesCommand(argv: string[]): Promise<number> {
   console.log(
     `图片阶段完成：图片段 ${stats.references}，成功 ${stats.compressed + stats.passthrough}，已重写 ${stats.alreadyKeyed}`,
   )
+  if (result.upload !== undefined) {
+    const local = values.local === true ? '，local' : ''
+    console.log(`R2 上传：成功 ${result.upload.uploaded}，失败 ${result.upload.failed}（bucket ${bucket}${local}）`)
+  }
   console.log(`问题清单：错误 ${stats.errors}，警告 ${stats.warnings}（详见 images-manifest.json）`)
   console.log(`产物目录：${productsAbs}`)
   for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {

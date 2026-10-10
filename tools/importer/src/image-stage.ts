@@ -1,18 +1,24 @@
 /**
- * 图片阶段（T1-05 阶段 A）：读 runImport 的 JSON 产物 → 收集全部图片段
+ * 图片阶段（T1-05）：读 runImport 的 JSON 产物 → 收集全部图片段
  * （题干/选项/解析/材料四处宿主，模块序 → 试卷序 → items 序 → 段序）→
  * 定位源文件 → 压缩（位图转 webp）或原字节透传（gif）→ 派生内容寻址键 →
- * 写 r2/ 工件 → 模块 JSON 图片段 path 原位重写 → 写 images-manifest.json。
+ * 写 r2/ 工件 → 模块 JSON 图片段 path 原位重写 → 写 images-manifest.json →
+ * （阶段 B，--bucket 启用时）r2/ 工件全量上传 R2。
  * 幂等与确定性：同产物 + 同输入 → 逐字节相同输出（工件字节由源字节与固定
  * sharp 参数决定；模块 JSON 重写沿用 pipeline 的确定性序列化格式；产物无任何
- * 变更的重跑为纯校验性 no-op，不写出文件——全部段已是键且工件齐备时如此）。
+ * 变更的重跑为纯校验性 no-op，不写出文件——全部段已是键且工件齐备时如此。
+ * 上传成功本身不产生本地文件写：上传成功且无其他变更时不写 images-manifest）。
  * 容错哲学与解析/入库阶段一致：单图失败（路径越界/文件缺失/类型不支持/
- * 处理失败/工件缺失）只记 error 级 issue 且该段保持源路径，其余图片继续。
+ * 处理失败/工件缺失）只记 error 级 issue 且该段保持源路径，其余图片继续；
+ * 上传阶段同理（单对象失败记 r2_upload_failed，其余对象继续，结果按输入序
+ * 聚合）。带 --bucket 的重跑 = 全量 re-put（R2 put 幂等覆盖，内容寻址同键同
+ * 字节，语义安全）。
  * 键设计（ADR-0007）：img/<源字节 sha256>.webp|.gif——内容寻址，同内容
  * 天然去重、再蒸馏重导入键不变；DB 存裸键，访问 URL 由服务层构造。
  * 安全：产物根与输入根均为受信根（CLI 显式指定或 manifest 登记），全部派生
- * 读写路径一律经 resolveWithin 界内校验（CWE-22）；本阶段无网络、无凭据
- * （R2 上传属阶段 B，产物目录 r2/ 即待传工件区）。
+ * 读写路径一律经 resolveWithin 界内校验（CWE-22）；本阶段自身无凭据（R2
+ * 凭据走 wrangler 本机 OAuth，bucket 名是 CLI 参数；上传经 node 直启仓库根
+ * wrangler.js、不经 shell，见 r2-upload.ts）。
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -21,6 +27,7 @@ import sharp from 'sharp'
 import { InvalidProductsError } from './db-stage.js'
 import { moduleFolderOfCode } from './modules.js'
 import { resolveWithin } from './pipeline.js'
+import { uploadArtifacts } from './r2-upload.js'
 import type {
   ImageMapping,
   ImagesManifest,
@@ -224,8 +231,9 @@ function validateSegments(value: unknown, where: string): SegmentView[] {
 
 /**
  * 执行一次图片阶段：读产物 → 逐段定位/压缩/透传 → 工件写 r2/ → 模块 JSON
- * 路径重写 → 写 images-manifest.json（同产物 + 同输入逐字节确定）。
- * 产物无变更的重跑（全部段已键且工件齐备且无问题）为纯校验性 no-op，不写文件。
+ * 路径重写 →（--bucket 启用时）r2/ 工件全量上传 R2 → 写 images-manifest.json
+ * （同产物 + 同输入逐字节确定）。产物无变更的重跑（全部段已键且工件齐备且无
+ * 问题）为纯校验性 no-op，不写文件；上传成功本身不产生本地文件写。
  * import-manifest.json 不回写（那是 parse 阶段的记录）。
  */
 export async function runImagesStage(options: ImagesStageOptions): Promise<ImagesStageResult> {
@@ -297,10 +305,28 @@ export async function runImagesStage(options: ImagesStageOptions): Promise<Image
   }
 
   stats.images = ctx.mappings.size
+
+  // ---- R2 上传（阶段 B，--bucket 启用）：r2/ 工件全量 put；issues 并入总清单（统计随后重算） ----
+  let upload: { uploaded: number; failed: number } | undefined
+  if (options.bucket !== undefined) {
+    const uploadResult = await uploadArtifacts(
+      {
+        productsDir: productsRoot,
+        bucket: options.bucket,
+        local: options.local,
+        concurrency: options.concurrency,
+      },
+      options.runPut,
+    )
+    issues.push(...uploadResult.issues)
+    upload = { uploaded: uploadResult.uploaded, failed: uploadResult.failed }
+  }
+
   stats.errors = issues.filter((entry) => entry.severity === 'error').length
   stats.warnings = issues.filter((entry) => entry.severity === 'warning').length
 
-  // ---- images-manifest.json 写出（无变更重跑不写：幂等 no-op 保持文件字节不变） ----
+  // ---- images-manifest.json 写出（无变更重跑不写：幂等 no-op 保持文件字节不变；
+  //      上传失败计入 issues → dirty；上传成功不写文件） ----
   const imagesManifestPath = resolveWithin(productsRoot, 'images-manifest.json')
   const dirty =
     rewrote.length > 0 ||
@@ -319,7 +345,7 @@ export async function runImagesStage(options: ImagesStageOptions): Promise<Image
     ctx.wrote.push(imagesManifestPath)
   }
 
-  return { stats, hardErrors: stats.errors, issues, wrote: ctx.wrote, rewrote }
+  return { stats, hardErrors: stats.errors, issues, wrote: ctx.wrote, rewrote, upload }
 }
 
 /**

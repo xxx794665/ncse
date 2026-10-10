@@ -4,6 +4,8 @@
  * （`--> statement-breakpoint` 是合法 SQL 行注释，可整文件执行——同时验证迁移在
  * 原生 SQLite 可执行），再 exec 生成的 SQL，断言分类体系/题组/题目/import_runs、
  * 幂等重放、字节确定性、数据质量门与 SQL 字面量转义。
+ * T1-05 阶段 B 增 stats.images 断言：实际进 SQL 的 image 段 path 去重计数
+ * （clean 夹具含 ../90-图片 引用与公式图；另造 img/ 键重写产物验证去重口径）。
  * 夹具全部为合成虚构题目；产物与 SQL 写入系统临时目录，测试后清理。
  */
 import fs from 'node:fs'
@@ -14,7 +16,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { runDbStage, InvalidProductsError } from '../src/db-stage.js'
 import { main } from '../src/main.js'
-import { runImport } from '../src/pipeline.js'
+import { runImport, resolveWithin } from '../src/pipeline.js'
 import type { RichContent } from '@ncse/shared'
 import type { ParsedGroup, ParsedPaper, ParsedQuestion } from '../src/types.js'
 
@@ -91,6 +93,31 @@ function findGroupBySourceKey(productsRoot: string, module: string, sourceKey: s
     }
   }
   return undefined
+}
+
+/** 把产物模块 JSON 的 image 段 path 原位映射为内容寻址键形态（模拟 images 阶段重写后的产物） */
+function rewriteImagePaths(productsRoot: string, map: (path: string) => string): void {
+  for (const name of fs.readdirSync(path.join(productsRoot, 'modules'))) {
+    if (!name.endsWith('.json')) continue
+    // 写入侧派生路径一律经 resolveWithin 界内校验（与源码同一防线，CWE-22）
+    const modulePath = resolveWithin(productsRoot, `modules/${name}`)
+    const root = JSON.parse(fs.readFileSync(modulePath, 'utf8')) as {
+      papers: ParsedPaper[]
+    }
+    for (const paper of root.papers) {
+      for (const item of paper.items) {
+        const hosts = 'qid' in item
+          ? [item.stem, item.analysis, ...item.options.map((option) => option.content)]
+          : [item.material]
+        for (const content of hosts) {
+          for (const segment of content) {
+            if (segment.type === 'image') segment.path = map(segment.path)
+          }
+        }
+      }
+    }
+    fs.writeFileSync(modulePath, `${JSON.stringify(root, null, 2)}\n`, 'utf8')
+  }
 }
 
 describe('clean 产物：SQL 执行与数据断言', () => {
@@ -208,7 +235,7 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     db.close()
   })
 
-  it('import_runs 1 行：version / input_digest / stats / status', () => {
+  it('import_runs 1 行：version / input_digest / stats / status（含 images 去重计数）', () => {
     const db = createDb()
     const result = runDbStage({
       productsDir: cleanProducts,
@@ -224,8 +251,9 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     expect(runs[0].status).toBe('success')
     expect(runs[0].input_digest).toMatch(/^[0-9a-f]{64}$/)
     expect(runs[0].input_digest).toBe(result.inputDigest)
-    expect(JSON.parse(runs[0].stats)).toEqual({ questions: 12, questionGroups: 3, images: 0, knowledgePoints: 0 })
-    expect(result.stats).toEqual({ questions: 12, questionGroups: 3, images: 0, knowledgePoints: 0 })
+    // images：clean 夹具实际进 SQL 的 image 段 path 去重 = 13（见下方图片统计用例的逐项清点）
+    expect(JSON.parse(runs[0].stats)).toEqual({ questions: 12, questionGroups: 3, images: 13, knowledgePoints: 0 })
+    expect(result.stats).toEqual({ questions: 12, questionGroups: 3, images: 13, knowledgePoints: 0 })
     db.close()
   })
 
@@ -316,6 +344,47 @@ describe('数据质量门（error 产物）', () => {
     expect(answers.get('800101')).toBe('甲')
     expect(answers.get('800103')).toBe('')
     db.close()
+  })
+})
+
+describe('图片统计（stats.images 做实：进 SQL 的 image 段 path 去重计数）', () => {
+  it('clean 产物 → 13：题干/选项公式图/解析四处宿主与题组材料逐项清点；error 产物无图片段 → 0', () => {
+    const clean = runDbStage({ productsDir: cleanProducts, version: 1 })
+    // 逐项清点（全部题目入库、3 个组全部生成）：
+    //   04 数量 900401 解析公式图 1；
+    //   05 判断 900501 题干图 1 + 选项公式图 4 + 解析图 1 = 6；
+    //   06 资料材料 1 表格图 1（题组材料）+ 900602 选项公式图 4 + 解析公式图 1 = 6
+    expect(clean.stats.images).toBe(13)
+    // SQL 的 import_runs 行 stats JSON 带该值（除此外语句语义不变）
+    expect(clean.sql).toContain('"images":13')
+
+    const error = runDbStage({ productsDir: errorProducts, version: 1 })
+    expect(error.stats.images).toBe(0) // 错误卷夹具不含图片段
+  })
+
+  it('重写后产物（img/ 键）→ 按键去重：两个源路径同键 → 12；import_runs 行含该值', () => {
+    const keyed = path.join(outDir, 'keyed-products')
+    fs.cpSync(cleanProducts, keyed, { recursive: true })
+    // 13 个去重源路径 → 12 个键：首两个源路径共用同一键（模拟同内容图片天然去重）
+    const zeroKey = `img/${'0'.repeat(64)}.webp`
+    const sourceToKey = new Map<string, string>()
+    let index = 0
+    rewriteImagePaths(keyed, (source) => {
+      const existing = sourceToKey.get(source)
+      if (existing !== undefined) return existing
+      const key = index < 2 ? zeroKey : `img/${index.toString(16).padStart(64, '0')}.webp`
+      sourceToKey.set(source, key)
+      index++
+      return key
+    })
+    expect(sourceToKey.size).toBe(13)
+    const result = runDbStage({ productsDir: keyed, version: 2 })
+    expect(result.stats).toEqual({ questions: 12, questionGroups: 3, images: 12, knowledgePoints: 0 })
+    expect(result.sql).toContain('"images":12')
+    // 行级抽查：题干 JSON 列里确实已是 img/ 键形态（stem 列含 img/ 前缀路径）
+    expect(result.sql).toContain('img/')
+    // 确定性不受重写方式影响：同产物同 version 重跑全等
+    expect(runDbStage({ productsDir: keyed, version: 2 }).sql).toBe(result.sql)
   })
 })
 
