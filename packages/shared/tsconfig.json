@@ -6,10 +6,9 @@
     "lib": ["ES2022"],
     "strict": true,
     "declaration": true,
-    "outDir": "dist",
-    "rootDir": "src",
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "test"]
 }

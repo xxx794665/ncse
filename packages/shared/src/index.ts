@@ -1,7 +1,8 @@
 /**
  * @ncse/shared — 前后端共用类型与常量。
- * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）；
- * 后续将承载：业务 DTO、考试蓝图与每题时限推导（T1-07）等。
+ * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
+ * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）；
+ * 后续将承载：业务 DTO 等。
  */
 
 /** 应用基本信息（占位类型） */
@@ -131,3 +132,5 @@ export interface AuthResponse {
 export interface MeResponse {
   user: AuthUser
 }
+
+export * from './blueprint.js'
