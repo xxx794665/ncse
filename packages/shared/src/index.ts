@@ -1,9 +1,11 @@
 /**
  * @ncse/shared — 前后端共用类型与常量。
  * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
- * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）；
- * 后续将承载：业务 DTO 等。
+ * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）；
+ * 后续将承载：其余业务 DTO 等。
  */
+
+import type { XingceModuleCode } from './blueprint.js'
 
 /** 应用基本信息（占位类型） */
 export interface AppInfo {
@@ -134,6 +136,90 @@ export interface AuthResponse {
 /** GET /api/auth/me 响应体（受保护路由） */
 export interface MeResponse {
   user: AuthUser
+}
+
+/* ============ 练习会话 DTO（T1-08b 定稿，前端 T1-08f 直接复用） ============ */
+
+/**
+ * POST /api/practice/sessions 请求体。
+ * count 取值 5/10/20/30（与前端模块选择页的题数选项一致，勿单方扩值），缺省 10；
+ * 模块可用题目不足 count 时按实际数建会话（不报错），为 0 时 400。
+ */
+export interface CreatePracticeSessionRequest {
+  /** 行测模块编码（六模块之一，非法值 400） */
+  module: XingceModuleCode
+  /** 题目数量（5/10/20/30，缺省 10） */
+  count?: number
+}
+
+/**
+ * 续做回显的已答题目信息：读 practice_records 中该会话该题最近一条
+ * （判分端点 POST /api/practice/sessions/:id/answers 落库，T1-08c）。
+ */
+export interface PracticeAnsweredInfo {
+  /** 用户作答内容（单选为选项键，如 'A'） */
+  answer: string
+  /** 是否答对 */
+  isCorrect: boolean
+  /** 是否超时 */
+  isTimeout: boolean
+  /** 本题用时（毫秒） */
+  durationMs: number
+}
+
+/**
+ * 练习会话内的题目视图。
+ * 不含答案与解析（服务端判分共识，见 ADR-0009 与任务索引 T1-08 拆片：
+ * answer/analysis 仅在判分响应中回发）；
+ * 图片段 path 已投影为可渲染绝对 URL（/api/img/<键>，图片端点 T1-08d），text 段原样。
+ */
+export interface PracticeQuestionDto {
+  /** 题目 id（questions 表主键） */
+  id: number
+  /** 题目类型（M1 仅 'single_choice'） */
+  kind: QuestionKind
+  /** 题干富片段（图片段 path 已投影 URL） */
+  stem: RichContent
+  /** 选项数组（含选项键；content 图片段 path 已投影 URL） */
+  options: QuestionOption[]
+  /** 已答信息（null = 未作答；续做回显用） */
+  answered: PracticeAnsweredInfo | null
+}
+
+/** GET /api/practice/sessions/:id 响应体（POST 建会话同型，answered 全 null） */
+export interface PracticeSessionDetail {
+  /** 会话 id */
+  id: number
+  /** 练习模式（M1 仅 'module'） */
+  mode: PracticeMode
+  /** 行测模块编码（mode='module' 时非空） */
+  moduleCode: XingceModuleCode | null
+  /** 会话状态（in_progress | finished | abandoned，任意状态均可取详情） */
+  status: PracticeSessionStatus
+  /** 题目总数（questionIds 清单长度） */
+  total: number
+  /** 会话内已答题目数（去重） */
+  answeredCount: number
+  /** 题目列表（序 = 会话 questionIds 序；不含答案与解析） */
+  questions: PracticeQuestionDto[]
+}
+
+/** GET /api/practice/sessions 列表项（当前用户 in_progress 会话，createdAt 倒序） */
+export interface PracticeSessionSummary {
+  /** 会话 id */
+  id: number
+  /** 练习模式（M1 仅 'module'） */
+  mode: PracticeMode
+  /** 行测模块编码（mode='module' 时非空） */
+  moduleCode: XingceModuleCode | null
+  /** 会话状态（列表恒为 in_progress） */
+  status: PracticeSessionStatus
+  /** 题目总数（questionIds 清单长度） */
+  total: number
+  /** 会话内已答题目数（去重） */
+  answeredCount: number
+  /** 创建时间（ISO-8601 UTC） */
+  createdAt: string
 }
 
 export * from './blueprint.js'
