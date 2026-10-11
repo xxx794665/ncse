@@ -241,6 +241,66 @@ export interface ImagesStageResult {
   upload?: { uploaded: number; failed: number }
 }
 
+/* ============ 视觉提取阶段（T1-06 阶段 A：图片内容 → 可搜索纯文本；看图由外部视觉子代理完成） ============ */
+
+/** runVisionStage 入参（vision 子命令与测试直调共用） */
+export interface VisionStageOptions {
+  /** runImport 产物目录（含 import-manifest.json 与 modules/*.json）；staging 目录固定为本目录下 vision-in/，vision-manifest.json 亦写回本目录 */
+  productsDir: string
+}
+
+/** 视觉提取统计（vision-manifest.json 的 stats 同结构） */
+export interface VisionStageStats {
+  /** 题目宿主图片段总出现次数（题干/选项/解析三处宿主合计；题组材料不枚举） */
+  references: number
+  /** 去重内容寻址键数 */
+  images: number
+  /** 已提取键数（entries 条数；含「已提取-空」条目） */
+  extracted: number
+  /** 待提取键数（缺文本的键，等待外部视觉子代理） */
+  pending: number
+  /** error 级问题条数（>0 时 CLI 退出码 1） */
+  errors: number
+  /** warning 级问题条数 */
+  warnings: number
+}
+
+/** 单键提取文本（vision-manifest.json 的 entries 条目；首见序；entries 即下次运行的缓存） */
+export interface VisionTextEntry {
+  /** 内容寻址键（img/<源字节 sha256>.webp|.gif） */
+  key: string
+  /** 提取文本（staging 全文 trim 后，内部换行保留；空白提取为 ''） */
+  text: string
+  /** 题目宿主引用次数（本次运行枚举重计；跨题共享键累计） */
+  refs: number
+}
+
+/** 视觉阶段产物 vision-manifest.json 结构（确定性：同产物 + 同状态 → 逐字节相同；无变更重跑不重写本文件） */
+export interface VisionManifest {
+  /** 导入版本号（取自 import-manifest.json，仅作登记；缓存判定只看键——内容寻址跨导入版本复用） */
+  version: string
+  stats: VisionStageStats
+  /** 已提取键文本（首见序：模块序 → 试卷序 → items 序 → 宿主序 → 段序） */
+  entries: VisionTextEntry[]
+  /** 缺文本的键（首见序；孤儿 staging 键不在此列） */
+  pending: string[]
+  /** 视觉阶段问题清单（收集顺序同 entries，确定性文本无时间戳） */
+  issues: ImportIssue[]
+}
+
+/** runVisionStage 返回值（供 CLI 判退出码与测试断言） */
+export interface VisionStageResult {
+  stats: VisionStageStats
+  /** 视觉阶段问题清单（与 vision-manifest.json 的 issues 同内容） */
+  issues: ImportIssue[]
+  /** 写出的产物文件（绝对路径；被回写 visionText 的模块 JSON 与 vision-manifest.json） */
+  wrote: string[]
+  /** 被回写 visionText 的模块 JSON 路径列表（本次运行实际发生回写的文件） */
+  rewrote: string[]
+  /** 待提取键（首见序；非空时 CLI 退出码 1） */
+  pending: string[]
+}
+
 /* ============ R2 上传（T1-05 阶段 B：r2/ 工件区 → wrangler r2 object put） ============ */
 
 /**

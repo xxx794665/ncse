@@ -1,5 +1,6 @@
 /**
- * @ncse/importer CLI 入口（T1-04 文本导入；T1-15 增 db 入库子命令；T1-05 增 images 图片子命令）。
+ * @ncse/importer CLI 入口（T1-04 文本导入；T1-15 增 db 入库子命令；T1-05 增 images
+ * 图片子命令；T1-06 增 vision 视觉提取子命令）。
  * parse 模式：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
  * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
  * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库）
@@ -11,6 +12,10 @@
  * r2/ 工件全量 `wrangler r2 object put`（幂等覆盖，重跑安全）；--local 为
  * wrangler 本地态（离线冒烟），默认远端——凭据走 wrangler 本机 OAuth，源码零凭据；
  * wrangler.js 经 node 直启仓库根 node_modules，缺失时本命令退出 2。）
+ * vision 模式：node dist/main.js vision --products <JSON 产物目录>（无其他旋钮）
+ * （枚举题目宿主图片段，吸收 <产物目录>/vision-in/<键>.txt 的外部视觉子代理提取
+ * 文本，按题原子回写 modules/*.json 的 visionText 并记 <产物目录>/
+ * vision-manifest.json；staging 目录固定为产物目录下 vision-in/）。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目）；1 = 产物结构无效（manifest 缺失/模块 JSON 损坏）；
@@ -18,8 +23,12 @@
  * images 0 = 图片阶段成功（允许有 warning）；1 = 图片或上传统计存在 error 或产物结构无效；
  * 2 = 用法错误（缺参数、products/input 目录不存在、路径越界、--local/--concurrency
  * 无 --bucket、--concurrency 越界 2–16、wrangler 未安装、桶名或对象键不合规）。
- * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求。
- * main 为 async（images 阶段含 sharp 异步压缩与子进程上传）；测试与 CLI 入口均 await 其退出码。
+ * vision 0 = 无 error 且无待提取键；1 = 存在 error 或仍有待提取键（或产物结构无效）；
+ * 2 = 用法错误（缺 --products、products 目录不存在、路径越界）。
+ * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求；vision 阶段零网络
+ * 零凭据零子进程（看图由外部视觉子代理读 r2/ 工件完成，文本经 vision-in/ 交换）。
+ * main 为 async（images 阶段含 sharp 异步压缩与子进程上传；vision 阶段逻辑同步但
+ * 保持 async 签名以备未来 API 提取器接入）；测试与 CLI 入口均 await 其退出码。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,7 +38,8 @@ import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { runImagesStage, InvalidInputDirError } from './image-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
 import { InvalidUploadTargetError, MissingWranglerError } from './r2-upload.js'
-import type { DbStageResult, ImagesStageResult, RunImportResult } from './types.js'
+import { runVisionStage } from './vision-stage.js'
+import type { DbStageResult, ImagesStageResult, RunImportResult, VisionStageResult } from './types.js'
 
 const USAGE =
   '用法：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录，默认 .import-out>] --version <导入版本号>'
@@ -40,7 +50,10 @@ const DB_USAGE =
 const IMAGES_USAGE =
   '用法：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>] [--bucket <R2 桶名> [--local] [--concurrency <2-16 默认 4>]]（工件写至 <产物目录>/r2/，路径重写写回 modules/*.json，--bucket 启用 R2 上传）'
 
-/** 问题清单打印上限（其余完整记录在 import-manifest.json / images-manifest.json） */
+const VISION_USAGE =
+  '用法：node dist/main.js vision --products <JSON 产物目录>（staging 固定为 <产物目录>/vision-in/，提取文本回写 modules/*.json 的 visionText 并记 vision-manifest.json）'
+
+/** 问题清单打印上限（其余完整记录在 import-manifest.json / images-manifest.json / vision-manifest.json） */
 const PRINT_ISSUE_LIMIT = 20
 
 /** CLI 选项值（input/version 必填校验在命令函数内做） */
@@ -66,14 +79,21 @@ interface ImagesCliValues {
   concurrency?: string
 }
 
+/** vision 子命令选项值 */
+interface VisionCliValues {
+  products?: string
+}
+
 /**
  * CLI 主函数（供测试直接调用；返回退出码，不直接 process.exit 以保证输出冲刷）。
  * argv[0] === 'db' 进入 db 入库模式；argv[0] === 'images' 进入 images 图片模式；
- * 其余参数照旧为 parse 模式（行为向后兼容）。
+ * argv[0] === 'vision' 进入 vision 视觉提取模式；其余参数照旧为 parse 模式
+ * （行为向后兼容）。
  */
 export async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'db') return runDbCommand(argv.slice(1))
   if (argv[0] === 'images') return runImagesCommand(argv.slice(1))
+  if (argv[0] === 'vision') return runVisionCommand(argv.slice(1))
   return runParseCommand(argv)
 }
 
@@ -304,6 +324,67 @@ async function runImagesCommand(argv: string[]): Promise<number> {
   const hidden = result.issues.length - PRINT_ISSUE_LIMIT
   if (hidden > 0) console.error(`…另有 ${hidden} 条问题未打印（见 images-manifest.json）`)
   return result.hardErrors > 0 ? 1 : 0
+}
+
+/** vision 模式（T1-06 阶段 A）：枚举题目宿主图片段 → 吸收 vision-in/ staging 文本 → 回写 visionText（退出语义：有 error 或仍有待提取键 → 1） */
+async function runVisionCommand(argv: string[]): Promise<number> {
+  let values: VisionCliValues
+  try {
+    values = parseArgs({
+      args: argv,
+      options: {
+        products: { type: 'string' },
+      },
+    }).values
+  } catch (err) {
+    console.error(`参数错误：${err instanceof Error ? err.message : String(err)}\n${VISION_USAGE}`)
+    return 2
+  }
+  const products = values.products
+  if (products === undefined || products === '') {
+    console.error(VISION_USAGE)
+    return 2
+  }
+  const productsAbs = path.resolve(products)
+  let isDir = false
+  try {
+    isDir = fs.statSync(productsAbs).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) {
+    console.error(`产物目录不存在或不是目录：${productsAbs}`)
+    return 2
+  }
+
+  let result: VisionStageResult
+  try {
+    result = await runVisionStage({ productsDir: productsAbs })
+  } catch (err) {
+    // 产物结构无效 → 1（可由重新 parse 修复）；路径越界按用法错误 → 2；其余异常如实上抛
+    if (err instanceof InvalidProductsError) {
+      console.error(err.message)
+      return 1
+    }
+    if (err instanceof ImportPathEscapeError) {
+      console.error(err.message)
+      return 2
+    }
+    throw err
+  }
+  const stats = result.stats
+  console.log(
+    `视觉提取：图片段 ${stats.references}，键 ${stats.images}，已提取 ${stats.extracted}，待提取 ${stats.pending}`,
+  )
+  console.log(`问题清单：错误 ${stats.errors}，警告 ${stats.warnings}（详见 vision-manifest.json）`)
+  console.log(`产物目录：${productsAbs}`)
+  for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {
+    const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
+    console.error(`[${entry.severity}] ${entry.file}${qid}：${entry.code} — ${entry.message}`)
+  }
+  const hidden = result.issues.length - PRINT_ISSUE_LIMIT
+  if (hidden > 0) console.error(`…另有 ${hidden} 条问题未打印（见 vision-manifest.json）`)
+  return stats.errors > 0 || result.pending.length > 0 ? 1 : 0
 }
 
 // 直接以 node 运行时自动执行（被测试 import 时不触发）

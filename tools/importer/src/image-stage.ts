@@ -46,8 +46,8 @@ export class InvalidInputDirError extends Error {
   }
 }
 
-/** 已重写内容寻址键形态：img/<64 位小写十六进制>.webp 或 .gif */
-const KEYED_PATH_PATTERN = /^img\/[0-9a-f]{64}\.(webp|gif)$/
+/** 已重写内容寻址键形态：img/<64 位小写十六进制>.webp 或 .gif（vision 阶段复用同一判定） */
+export const KEYED_PATH_PATTERN = /^img\/[0-9a-f]{64}\.(webp|gif)$/
 
 /** 可压缩源扩展名（小写；经 sharp 转 webp） */
 const COMPRESSIBLE_EXTENSIONS: ReadonlySet<string> = new Set([
@@ -74,10 +74,10 @@ const WEBP_QUALITY = 82
 /* ============ 图片阶段视角的产物结构（字段级校验后的读取形态） ============ */
 
 /** 富片段（JSON 原值的强类型收窄；path 就地改写直接作用于 JSON 原对象，整文件随后重新序列化） */
-type SegmentView = { type: 'text'; text: string } | { type: 'image'; path: string; alt?: string }
+export type SegmentView = { type: 'text'; text: string } | { type: 'image'; path: string; alt?: string }
 
 /** 题目（图片段宿主：题干/选项内容/解析） */
-interface QuestionView {
+export interface QuestionView {
   qid: string
   stem: SegmentView[]
   options: Array<{ key: string; content: SegmentView[] }>
@@ -85,18 +85,18 @@ interface QuestionView {
 }
 
 /** 题组（图片段宿主：材料） */
-interface GroupView {
+export interface GroupView {
   material: SegmentView[]
 }
 
 /** 试卷（file 为图片 src 的解析基准：src 相对试卷 md 所在目录） */
-interface PaperView {
+export interface PaperView {
   file: string
   items: Array<QuestionView | GroupView>
 }
 
 /** 模块产物（root 保留 JSON 原值，重写后整体重新序列化） */
-interface ModuleView {
+export interface ModuleView {
   root: Record<string, unknown>
   papers: PaperView[]
 }
@@ -124,15 +124,15 @@ interface ImageMetadata {
 
 /* ============ 产物读取与结构校验（宽松 unknown → 强类型收窄，坏结构抛 InvalidProductsError；风格同 db-stage） ============ */
 
-/** 校验通过的 manifest 图片阶段消费切片 */
-interface ManifestSlice {
+/** 校验通过的 manifest 图片阶段消费切片（vision 阶段复用 version/moduleOrder） */
+export interface ManifestSlice {
   version: string
   input: string
   moduleOrder: ModuleCode[]
 }
 
 /** 读 import-manifest.json 并校验图片阶段消费字段（缺失/损坏 → InvalidProductsError） */
-function readProductsManifest(productsRoot: string): ManifestSlice {
+export function readProductsManifest(productsRoot: string): ManifestSlice {
   const where = 'import-manifest.json'
   const manifestPath = resolveWithin(productsRoot, where)
   const root = asRecord(parseJsonText(readTextFile(manifestPath, where), where), where)
@@ -160,7 +160,7 @@ function expectModuleCode(code: string, where: string): ModuleCode {
  * 存在但不可读/非法 JSON/结构不符 → InvalidProductsError。
  * 返回的视图对象即 JSON.parse 原值（校验后收窄），path 改写作用于原对象。
  */
-function readModuleView(productsRoot: string, code: ModuleCode): ModuleView | null {
+export function readModuleView(productsRoot: string, code: ModuleCode): ModuleView | null {
   const where = `modules/${code}.json`
   const modulePath = resolveWithin(productsRoot, where)
   if (!fs.existsSync(modulePath)) return null

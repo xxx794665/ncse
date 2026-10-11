@@ -233,8 +233,8 @@ function dropDuplicateQids(
   }
 }
 
-/** 确定性 JSON 序列化：2 空格缩进 + 尾随换行（UTF-8、LF、无 BOM） */
-function serializeJson(value: unknown): string {
+/** 确定性 JSON 序列化：2 空格缩进 + 尾随换行（UTF-8、LF、无 BOM；全管线唯一序列化格式，各阶段共用禁止分叉） */
+export function serializeJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`
 }
 
