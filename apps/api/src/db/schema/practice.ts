@@ -1,13 +1,13 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
-import type { MockSessionStatus, PracticeMode, WrongBookStatus } from '@ncse/shared'
+import type { MockSessionStatus, PracticeMode, PracticeSessionStatus, WrongBookStatus, XingceModuleCode } from '@ncse/shared'
 import { users } from './account'
 import { blueprints, questions } from './content'
 import { createdAt, updatedAt } from './common'
 
 /**
  * 逐题练习记录：一次作答一行（append-only，不改不删）。
- * session_id 为「可中断续做」预留：同一次练习批次的所有记录写同一 UUID（客户端或服务端生成均可），
- * 空 = 单题独立练习；续做时按 (user_id, session_id) 取最近批次恢复进度。
+ * session_id 为「可中断续做」预留：同一次练习批次的所有记录写同一值（ADR-0009 起挂 practice_sessions，
+ * 见 sessionId 字段注释；空 = 单题独立练习）；续做时按 (user_id, session_id) 取最近批次恢复进度。
  */
 export const practiceRecords = sqliteTable(
   'practice_records',
@@ -27,7 +27,7 @@ export const practiceRecords = sqliteTable(
     /** 超时标记（超蓝图单题时限判超时，见架构设计 §5 / T1-07 推导） */
     isTimeout: integer('is_timeout', { mode: 'boolean' }).notNull().default(false),
     mode: text('mode').notNull().$type<PracticeMode>(),
-    /** 可中断续做的批次标识（UUID，空 = 独立单题练习） */
+    /** 可中断续做的练习会话 id（practice_sessions.id 的字符串形式，ADR-0009；practice_records 落库时写入）；空 = 单题独立练习 */
     sessionId: text('session_id'),
     createdAt: createdAt(),
   },
@@ -35,6 +35,34 @@ export const practiceRecords = sqliteTable(
     index('practice_records_user_question_idx').on(table.userId, table.questionId),
     index('practice_records_session_idx').on(table.userId, table.sessionId),
   ],
+)
+
+/**
+ * 练习会话（T1-08a，ADR-0009）：专项刷题的可中断作答批次（题目集合与进度），跨设备续做的载体；
+ * 推翻 T1-02 决策③（原设计题目清单由客户端持有，仅同设备续做）；practice_records.session_id 值挂本表 id（字符串形式）。
+ */
+export const practiceSessions = sqliteTable(
+  'practice_sessions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** 练习模式（M1 仅 'module'，枚举预留后续模式） */
+    mode: text('mode').notNull().$type<PracticeMode>(),
+    /**
+     * 行测模块编码：mode='module' 时应用层必填（库层无跨表 CHECK，与既有哲学一致）。
+     * 故意不设外键：模块 taxonomy 用稳定自然键（modules.code / shared XingceModuleCode），
+     * 内容重导入不牵连用户会话。
+     */
+    moduleCode: text('module_code').$type<XingceModuleCode>(),
+    /** 题目清单（会话的作答集合，服务端权威——续做 = 本清单减去 practice_records 已答行） */
+    questionIds: text('question_ids', { mode: 'json' }).$type<number[]>().notNull(),
+    status: text('status').notNull().default('in_progress').$type<PracticeSessionStatus>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [index('practice_sessions_user_status_idx').on(table.userId, table.status)],
 )
 
 /** 整卷模拟会话头：挂卷型蓝图；in_progress 状态的会话即「可中断续做」的载体（续做重新进入） */

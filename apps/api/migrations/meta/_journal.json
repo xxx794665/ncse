@@ -15,6 +15,13 @@
       "when": 1791520109766,
       "tag": "0001_confused_mercury",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791732199821,
+      "tag": "0002_pretty_enchantress",
+      "breakpoints": true
     }
   ]
 }

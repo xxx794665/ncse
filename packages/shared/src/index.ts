@@ -82,6 +82,9 @@ export type TagSource = 'official' | 'ai' | 'human_verified'
 /** 逐题练习模式：按模块专项 / 按知识点专项 / 随机 / 错题重做 */
 export type PracticeMode = 'module' | 'knowledge' | 'random' | 'wrong_redo'
 
+/** 练习会话状态（in_progress 支持中断跨设备续做；abandoned = 用户显式放弃） */
+export type PracticeSessionStatus = 'in_progress' | 'finished' | 'abandoned'
+
 /** 整卷模拟会话状态（in_progress 支持中断续做） */
 export type MockSessionStatus = 'in_progress' | 'submitted' | 'abandoned'
 
