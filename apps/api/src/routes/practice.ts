@@ -2,26 +2,35 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { and, asc, countDistinct, desc, eq, inArray, notExists, sql } from 'drizzle-orm'
+import {
+  deriveQuestionTimeLimit,
+  XINGCE_BLUEPRINTS,
+} from '@ncse/shared'
 import type {
   CreatePracticeSessionRequest,
   PracticeQuestionDto,
   PracticeSessionDetail,
+  PracticeSessionStatus,
   PracticeSessionSummary,
   QuestionKind,
   QuestionOption,
   RichContent,
+  SubmitPracticeAnswerResponse,
+  WrongBookContext,
   XingceModuleCode,
 } from '@ncse/shared'
 import { createDb, type DbClient } from '../db'
-import { modules, practiceRecords, practiceSessions, questions } from '../db/schema'
+import { modules, practiceRecords, practiceSessions, questions, wrongBook } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import type { AppEnv } from '../types'
 
 /**
- * 专项刷题·练习会话域路由（T1-08b，挂载于 /api/practice，见 src/routes/api.ts）：
+ * 专项刷题·练习会话域路由（T1-08b/08c，挂载于 /api/practice，见 src/routes/api.ts）：
  * - POST /sessions：按模块建会话（抽题：未做过优先、不足按最近作答最旧补齐），201 返回会话详情；
  * - GET /sessions/:id：会话详情（题目富片段不含答案/解析——服务端判分共识；图片段投影 /api/img URL）；
- * - GET /sessions：当前用户活动会话列表（只列 in_progress，createdAt 倒序）。
+ * - GET /sessions：当前用户活动会话列表（只列 in_progress，createdAt 倒序）；
+ * - POST /sessions/:id/answers：判分（practice_records append-only 落库 + 错题本状态机 ADR-0010
+ *   + 会话 finished 判定 ADR-0009），correctAnswer/analysis 仅判分后回发。
  * 全端点 requireAuth；业务错误一律抛 HTTPException（中文 message），
  * 由组合根 onError 统一收敛为 ApiErrorBody（沿用既有错误码，不新增）。
  */
@@ -50,6 +59,21 @@ const IMAGE_KEY_PATTERN = /^img\/[0-9a-f]{64}\.(webp|gif)$/
 
 /** 会话 404 文案：不存在与不属于当前用户同一句（防存在性探测） */
 const SESSION_NOT_FOUND_MESSAGE = '会话不存在'
+
+/**
+ * 判分超时推导的默认蓝图：省考联考·标准卷。蓝图选择器属前端交互，会话表未存蓝图 code，
+ * 扩展点留给后续任务（会话表加列 / 请求携带），当前判分固定按标准卷推导每题时限。
+ */
+const DEFAULT_BLUEPRINT_CODE = 'province_joint_std'
+
+/** 标准卷蓝图条目；shared 目录缺该 code 属代码级配置错误（同仓演进，fail fast） */
+const DEFAULT_BLUEPRINT = XINGCE_BLUEPRINTS.find((blueprint) => blueprint.code === DEFAULT_BLUEPRINT_CODE)
+if (DEFAULT_BLUEPRINT === undefined) {
+  throw new Error(`shared 蓝图目录缺少 code=${DEFAULT_BLUEPRINT_CODE} 的条目`)
+}
+
+/** durationMs 合法上限（毫秒）：24 小时，防把时间戳等荒谬值当用时落库 */
+const MAX_DURATION_MS = 24 * 60 * 60 * 1000
 
 /** 解析 JSON 请求体；不可解析（非 JSON / 非法编码）抛 400（与 auth.ts 同构） */
 async function readJsonBody(c: Context<AppEnv>): Promise<unknown> {
@@ -150,6 +174,22 @@ async function fetchQuestionRows(db: DbClient, questionIds: number[]): Promise<M
   return new Map(rows.map((row) => [row.id, row]))
 }
 
+/** 判分题目行（answer/analysis/options——仅判分端点取用，不进会话详情投影） */
+interface GradingQuestionRow {
+  answer: string
+  analysis: RichContent
+  options: QuestionOption[]
+}
+
+/** 取单题判分行（undefined = 悬空 id：清单内 id 但题目行已被内容重删的罕见态） */
+async function fetchGradingQuestionRow(db: DbClient, questionId: number): Promise<GradingQuestionRow | undefined> {
+  const rows = await db
+    .select({ answer: questions.answer, analysis: questions.analysis, options: questions.options })
+    .from(questions)
+    .where(eq(questions.id, questionId))
+  return rows[0]
+}
+
 /** 会话内已答回显投影（PracticeAnsweredInfo 的库侧形状） */
 interface AnsweredRecord {
   answer: string
@@ -240,6 +280,65 @@ function toQuestionDtos(
     })
   }
   return dtos
+}
+
+/** practice_sessions 整行（判分端点与 finished 判定共用的库侧形状） */
+type PracticeSessionRow = typeof practiceSessions.$inferSelect
+
+/**
+ * 错题本状态机（ADR-0010）：
+ * - 答错（无论是否在册）：upsert 复用 user+question 行——插入分支 active/wrongCount=1/redoCount=0/连对 0；
+ *   冲突分支回 active（eliminated/hard 复活）、wrongCount 与 redoCount 按行自引用累加、连对清零；
+ * - 答对且在册（任意 status）：redoCount/连对累加，status 不动（消灭由用户处置端点翻转）；
+ * - 答对不在册：无操作。
+ * updatedAt 显式给值（$onUpdate 在 upsert 冲突分支等路径不触发，不依赖它）。
+ * 返回状态机执行后的条目上下文（null = 不在册且答对）。
+ */
+async function applyWrongBookStateMachine(
+  db: DbClient,
+  userId: number,
+  questionId: number,
+  isCorrect: boolean,
+): Promise<WrongBookContext | null> {
+  const updatedAt = new Date().toISOString()
+  if (!isCorrect) {
+    await db
+      .insert(wrongBook)
+      .values({ userId, questionId, status: 'active', wrongCount: 1, redoCount: 0, consecutiveCorrect: 0, updatedAt })
+      .onConflictDoUpdate({
+        target: [wrongBook.userId, wrongBook.questionId],
+        set: {
+          status: 'active',
+          wrongCount: sql`${wrongBook.wrongCount} + 1`,
+          redoCount: sql`${wrongBook.redoCount} + 1`,
+          consecutiveCorrect: 0,
+          updatedAt,
+        },
+      })
+    return { status: 'active' }
+  }
+  // 答对：仅行存在时累加（returning 空数组 = 不在册，无操作）；status 原样带回供响应上下文
+  const updated = await db
+    .update(wrongBook)
+    .set({
+      redoCount: sql`${wrongBook.redoCount} + 1`,
+      consecutiveCorrect: sql`${wrongBook.consecutiveCorrect} + 1`,
+      updatedAt,
+    })
+    .where(and(eq(wrongBook.userId, userId), eq(wrongBook.questionId, questionId)))
+    .returning({ status: wrongBook.status })
+  const row = updated[0]
+  return row === undefined ? null : { status: row.status }
+}
+
+/**
+ * 会话是否已全部作答（finished 判定，ADR-0009）：实际存在的题目数 == 本会话有作答记录的题目数
+ * （两 Map 均以 questionId 为键去重；清单内悬空 id 不阻塞完成——题删记录亦级联删）。
+ */
+async function isSessionFullyAnswered(db: DbClient, userId: number, session: PracticeSessionRow): Promise<boolean> {
+  const questionRows = await fetchQuestionRows(db, session.questionIds)
+  const records = await fetchLatestRecordsByQuestion(db, userId, session.id, session.questionIds)
+  return questionRows.size === records.size
 }
 
 export const practiceRoute = new Hono<AppEnv>()
@@ -360,4 +459,104 @@ practiceRoute.get('/sessions', async (c) => {
     createdAt: session.createdAt,
   }))
   return c.json(body, 200)
+})
+
+practiceRoute.post('/sessions/:id/answers', async (c) => {
+  // 非数字 id 一律 404（与 GET /:id 同构，不区分原因，防存在性探测）
+  const idParam = c.req.param('id')
+  if (!/^\d+$/.test(idParam)) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  const authUser = c.get('authUser')
+  const db = createDb(c.env)
+
+  // 归属条件并入查询（与 GET /:id 同构）：不存在与非本人同回 404；
+  // 任意 status 均可作答（append-only 语义：finished/abandoned 重答不拦，多落一行记录）
+  const sessionRows = await db
+    .select()
+    .from(practiceSessions)
+    .where(and(eq(practiceSessions.id, Number(idParam)), eq(practiceSessions.userId, authUser.id)))
+  const session = sessionRows[0]
+  if (session === undefined) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  // 入参校验序：questionId（形状 → 会话成员）→ 题目行存在（404）→ answer 选项合法 → durationMs 区间
+  const requestBody = await readJsonBody(c)
+  if (typeof requestBody !== 'object' || requestBody === null) {
+    throw new HTTPException(400, { message: '请求体须为 JSON 对象，且含 questionId、answer、durationMs 字段' })
+  }
+  const { questionId, answer, durationMs } = requestBody as Record<string, unknown>
+
+  if (typeof questionId !== 'number' || !Number.isSafeInteger(questionId) || questionId <= 0) {
+    throw new HTTPException(400, { message: 'questionId 必须是正整数' })
+  }
+  if (!session.questionIds.includes(questionId)) {
+    throw new HTTPException(400, { message: '题目不在会话内' })
+  }
+
+  // 题目行（answer/analysis/options）：answer 选项校验与判分依据
+  const questionRow = await fetchGradingQuestionRow(db, questionId)
+  if (questionRow === undefined) {
+    throw new HTTPException(404, { message: '题目不存在' })
+  }
+
+  // answer 限定为该题选项键：防无效作答（如 'E'）混入「判错」语义
+  if (typeof answer !== 'string' || !questionRow.options.some((option) => option.key === answer)) {
+    throw new HTTPException(400, { message: 'answer 必须是题目选项键之一' })
+  }
+  if (
+    typeof durationMs !== 'number' ||
+    !Number.isSafeInteger(durationMs) ||
+    durationMs < 0 ||
+    durationMs >= MAX_DURATION_MS
+  ) {
+    throw new HTTPException(400, { message: `durationMs 必须是 0 到 ${MAX_DURATION_MS} 之间的整数（毫秒）` })
+  }
+
+  // 服务端判分：单选为选项键比对（答案不随题面下发，判分后才回发——服务端判分共识）
+  const isCorrect = answer === questionRow.answer
+
+  // 超时推导：默认标准卷蓝图 × 会话模块的每题时限，严格大于判超时（等于时限不超时）；
+  // moduleCode 为 null（非 module 模式）或蓝图未含该模块 → 不判超时
+  const timeLimitSeconds =
+    session.moduleCode === null ? undefined : deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, session.moduleCode)
+  const isTimeout = timeLimitSeconds !== undefined && durationMs > timeLimitSeconds * 1000
+
+  // 作答记录落库（append-only：同题重复提交每次一行，不去重不覆盖；mode/sessionId 取自会话）
+  await db.insert(practiceRecords).values({
+    userId: authUser.id,
+    questionId,
+    answer,
+    isCorrect,
+    durationMs,
+    isTimeout,
+    mode: session.mode,
+    sessionId: String(session.id),
+  })
+
+  // 错题本状态机（ADR-0010）：答错复活在册，答对在册累加重做与连对
+  const wrongBookContext = await applyWrongBookStateMachine(db, authUser.id, questionId, isCorrect)
+
+  // 会话 finished 判定（ADR-0009）：全部作答后翻状态（updatedAt 显式给值，同上不依赖 $onUpdate）
+  let sessionStatus: PracticeSessionStatus = session.status
+  if (await isSessionFullyAnswered(db, authUser.id, session)) {
+    await db
+      .update(practiceSessions)
+      .set({ status: 'finished', updatedAt: new Date().toISOString() })
+      .where(eq(practiceSessions.id, session.id))
+    sessionStatus = 'finished'
+  }
+
+  const responseBody: SubmitPracticeAnswerResponse = {
+    questionId,
+    isCorrect,
+    isTimeout,
+    correctAnswer: questionRow.answer,
+    analysis: projectRichContent(questionRow.analysis, c.req.url),
+    wrongBook: wrongBookContext,
+    sessionStatus,
+  }
+  return c.json(responseBody, 200)
 })

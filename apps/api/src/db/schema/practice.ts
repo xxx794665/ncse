@@ -111,7 +111,8 @@ export const mockAnswers = sqliteTable(
 
 /**
  * 错题本：user+question 唯一（重复答错复用同一行并累加计数）。
- * 消灭规则（连续答对 N 次 → eliminated）的 N 由业务层定，库只存计数与状态。
+ * 消灭由用户处置（移除→eliminated / 归难点本→hard，ADR-0010，取代自动连对消灭），
+ * 答错任意在册题复活 active 并累加计数；库只存计数与状态。
  */
 export const wrongBook = sqliteTable(
   'wrong_book',
@@ -128,7 +129,7 @@ export const wrongBook = sqliteTable(
     wrongCount: integer('wrong_count').notNull().default(0),
     /** 累计重做次数 */
     redoCount: integer('redo_count').notNull().default(0),
-    /** 重做连续答对次数（消灭判据） */
+    /** 重做连续答对次数（仅供后续分析；ADR-0010 起不再是消灭判据） */
     consecutiveCorrect: integer('consecutive_correct').notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -1,253 +1,41 @@
-import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { env, exports } from 'cloudflare:workers'
-import type { QuestionOption, RichContent, RichSegment, XingceModuleCode } from '@ncse/shared'
-import { createDb, type DbClient } from '../src/db'
-import { examTypes, modules, practiceRecords, practiceSessions, questions, subjects, users } from '../src/db/schema'
+import type { QuestionOption, RichContent, RichSegment } from '@ncse/shared'
+import { examTypes, users } from '../src/db/schema'
+import {
+  bearerGet,
+  bearerPost,
+  errorField,
+  numberField,
+  ORIGIN,
+  postJson,
+  questionList,
+  registerForToken,
+  requestJson,
+} from './api-helpers'
+import {
+  db,
+  fakeImageKey,
+  insertContentFixture,
+  insertRecord,
+  insertSession,
+  LEGACY_IMAGE_PATH,
+  userIdOf,
+  type ContentFixture,
+} from './practice-fixtures'
 
 /**
- * 专项刷题·练习会话 API 集成测试（T1-08b）：经 exports.default.fetch 走真实 worker 入口
+ * 专项刷题·练习会话 API 集成测试（T1-08b）：经 worker 入口走真实 fetch
  * （含 CORS、路由挂载、onError 错误信封），D1 为 workerd 内的本地实例。
- * 已答状态经直插 practice_records 模拟（判分端点为 T1-08c，不在本片）。
- * 内容夹具全虚构：civil_service/xingce 链下 political_theory 12 题 + common_sense 2 题
- * + verbal 模块行不插题（验证「模块暂无题目」分支）。
+ * 已答状态经直插 practice_records 模拟（判分端点见 practice-answer.test.ts，T1-08c）。
+ * 请求/断言助手与内容夹具抽至 test/api-helpers.ts 与 test/practice-fixtures.ts
+ * （civil_service/xingce 链下 political_theory 12 题 + common_sense 2 题 + judgement 1 题
+ * + verbal 模块行不插题，验证「模块暂无题目」分支）。
  */
-
-const worker = exports.default
-const db: DbClient = createDb(env)
-
-/**
- * 测试注册口令：每次测试运行随机生成（Web Crypto，test-only——运行结束即失效，
- * 运行外不可用，非硬编码值；注册即签发 token，后续全程用 token，口令无复用）。
- */
-const TEST_PASSWORD = `test-only-${crypto.randomUUID()}`
-
-/** 请求 origin（与 worker.fetch 的 Request 一致；图片 URL 投影断言用） */
-const ORIGIN = 'http://localhost'
-
-interface JsonOutcome {
-  status: number
-  body: Record<string, unknown>
-}
-
-/** 发 JSON 请求并按 JSON 解析响应（成功 DTO 与错误信封统一走这里） */
-async function requestJson(path: string, init?: RequestInit): Promise<JsonOutcome> {
-  const response = await worker.fetch(new Request(`${ORIGIN}${path}`, init))
-  const body = (await response.json()) as Record<string, unknown>
-  return { status: response.status, body }
-}
-
-function postJson(body: unknown): RequestInit {
-  return {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }
-}
-
-function bearerPost(token: string, body: unknown): RequestInit {
-  return {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  }
-}
-
-function bearerGet(token: string): RequestInit {
-  return { method: 'GET', headers: { Authorization: `Bearer ${token}` } }
-}
-
-/** 取错误信封的 error 字段（形状不对时先在 toHaveProperty 上失败，给出可读断言） */
-function errorField(body: Record<string, unknown>): { code: string; message: string } {
-  expect(body).toHaveProperty('error')
-  return body.error as { code: string; message: string }
-}
-
-/** 从响应体取 number 字段（提前失败给出可读信息，避免后续 as 断言静默通过） */
-function numberField(body: Record<string, unknown>, key: string): number {
-  const value = body[key]
-  expect(typeof value).toBe('number')
-  return value as number
-}
-
-/** 从响应体取 string 字段（同上） */
-function stringField(body: Record<string, unknown>, key: string): string {
-  const value = body[key]
-  expect(typeof value).toBe('string')
-  return value as string
-}
-
-/** 会话详情响应的 questions 数组（形状不对先失败给出可读信息） */
-function questionList(body: Record<string, unknown>): Record<string, unknown>[] {
-  const value = body.questions
-  expect(Array.isArray(value)).toBe(true)
-  return value as Record<string, unknown>[]
-}
-
-/** 注册拿 token（注册即签发，无需再登录） */
-async function registerForToken(username: string): Promise<string> {
-  const { status, body } = await requestJson('/api/auth/register', postJson({ username, password: TEST_PASSWORD }))
-  expect(status).toBe(201)
-  return stringField(body, 'token')
-}
-
-/** 按用户名查 users.id（直插 records / sessions 夹具用） */
-async function userIdOf(username: string): Promise<number> {
-  const rows = await db.select({ id: users.id }).from(users).where(eq(users.username, username))
-  const id = rows.at(0)?.id
-  if (id === undefined) throw new Error(`未找到用户 ${username}`)
-  return id
-}
-
-/* ---------- 内容与作答夹具 ---------- */
-
-/** 合成内容寻址键（img/<64hex>.webp 形态，测试虚构） */
-function fakeImageKey(index: number): string {
-  return `img/${String(index).padStart(64, '0')}.webp`
-}
-
-/** 标准四选项 A–D（纯文本富片段） */
-function standardOptions(): QuestionOption[] {
-  return ['A', 'B', 'C', 'D'].map((key) => ({ key, content: [{ type: 'text', text: `选项 ${key}` }] }))
-}
-
-/** 源仓库相对路径图片段（历史数据形态，不应被投影为 /api/img URL） */
-const LEGACY_IMAGE_PATH = 'attachments/figure.png'
-
-interface ContentFixture {
-  /** political_theory 12 题（插入序即索引序；末题为含源相对路径段的历史数据形态） */
-  politicalQuestionIds: number[]
-  /** common_sense 2 题 */
-  commonQuestionIds: number[]
-}
-
-/** 直插一颗最小单选题（挂模块），返回 questions.id */
-async function insertQuestion(moduleId: number, qid: string, stem: RichContent): Promise<number> {
-  const rows = await db
-    .insert(questions)
-    .values({
-      moduleId,
-      qid,
-      kind: 'single_choice',
-      stem,
-      options: standardOptions(),
-      answer: 'B',
-      analysis: [{ type: 'text', text: '解析' }],
-    })
-    .returning({ id: questions.id })
-  const id = rows.at(0)?.id
-  if (id === undefined) throw new Error('questions 插入未返回 id')
-  return id
-}
-
-/** 造整链内容夹具：civil_service → xingce → 三模块（political_theory/common_sense/verbal）+ 14 题 */
-async function insertContentFixture(): Promise<ContentFixture> {
-  const examTypeRows = await db.insert(examTypes).values({ code: 'civil_service', name: '公务员' }).returning({ id: examTypes.id })
-  const examTypeId = examTypeRows.at(0)?.id
-  if (examTypeId === undefined) throw new Error('exam_types 插入未返回 id')
-  const subjectRows = await db.insert(subjects).values({ examTypeId, code: 'xingce', name: '行测' }).returning({ id: subjects.id })
-  const subjectId = subjectRows.at(0)?.id
-  if (subjectId === undefined) throw new Error('subjects 插入未返回 id')
-
-  const moduleCodes: XingceModuleCode[] = ['political_theory', 'common_sense', 'verbal']
-  const moduleIds = new Map<XingceModuleCode, number>()
-  for (const code of moduleCodes) {
-    const rows = await db
-      .insert(modules)
-      .values({ subjectId, code, name: `模块 ${code}` })
-      .returning({ id: modules.id })
-    const id = rows.at(0)?.id
-    if (id === undefined) throw new Error('modules 插入未返回 id')
-    moduleIds.set(code, id)
-  }
-  const politicalModuleId = moduleIds.get('political_theory')
-  const commonModuleId = moduleIds.get('common_sense')
-  if (politicalModuleId === undefined || commonModuleId === undefined) throw new Error('模块 id 缺失')
-
-  const politicalQuestionIds: number[] = []
-  for (let i = 0; i < 11; i++) {
-    // 前 11 题：文本段 + KEYED 图片段混合
-    politicalQuestionIds.push(
-      await insertQuestion(politicalModuleId, `pt-${String(i + 1).padStart(2, '0')}`, [
-        { type: 'text', text: `政治理论第 ${i + 1} 题` },
-        { type: 'image', path: fakeImageKey(i), alt: `图 ${i + 1}` },
-      ]),
-    )
-  }
-  // 第 12 题：含源相对路径图片段（非键形态，验证不投影）
-  politicalQuestionIds.push(
-    await insertQuestion(politicalModuleId, 'pt-12', [
-      { type: 'text', text: '政治理论历史数据题' },
-      { type: 'image', path: LEGACY_IMAGE_PATH, alt: '源相对路径图' },
-    ]),
-  )
-
-  const commonQuestionIds: number[] = []
-  for (let i = 0; i < 2; i++) {
-    commonQuestionIds.push(
-      await insertQuestion(commonModuleId, `cs-${String(i + 1).padStart(2, '0')}`, [
-        { type: 'text', text: `常识第 ${i + 1} 题` },
-      ]),
-    )
-  }
-  return { politicalQuestionIds, commonQuestionIds }
-}
-
-interface RecordOverrides {
-  answer?: string
-  isCorrect?: boolean
-  isTimeout?: boolean
-  durationMs?: number
-}
-
-/** 直插一条作答记录（判分端点 T1-08c 未落地，已答状态经此模拟）；sessionId null = 单题独立练习 */
-async function insertRecord(
-  userId: number,
-  questionId: number,
-  sessionId: number | null,
-  createdAt: string,
-  overrides: RecordOverrides = {},
-): Promise<void> {
-  await db.insert(practiceRecords).values({
-    userId,
-    questionId,
-    answer: overrides.answer ?? 'B',
-    isCorrect: overrides.isCorrect ?? true,
-    durationMs: overrides.durationMs ?? 1234,
-    isTimeout: overrides.isTimeout ?? false,
-    mode: 'module',
-    sessionId: sessionId === null ? null : String(sessionId),
-    createdAt,
-  })
-}
-
-/** 直插一条会话（绕过 POST，用于列表/详情/续做夹具） */
-async function insertSession(
-  userId: number,
-  moduleCode: XingceModuleCode,
-  questionIds: number[],
-  options: { status?: 'in_progress' | 'finished' | 'abandoned'; createdAt?: string } = {},
-): Promise<number> {
-  const rows = await db
-    .insert(practiceSessions)
-    .values({
-      userId,
-      mode: 'module',
-      moduleCode,
-      questionIds,
-      status: options.status ?? 'in_progress',
-      createdAt: options.createdAt ?? '2026-10-11T00:00:00.000Z',
-    })
-    .returning({ id: practiceSessions.id })
-  const id = rows.at(0)?.id
-  if (id === undefined) throw new Error('practice_sessions 插入未返回 id')
-  return id
-}
 
 let content: ContentFixture
 
 beforeEach(async () => {
-  // 清空 users（级联清 practice_sessions / practice_records）与 exam_types（级联清内容域链条），用例互不依赖
+  // 清空 users（级联清 practice_sessions / practice_records / wrong_book）与 exam_types（级联清内容域链条），用例互不依赖
   await db.delete(users)
   await db.delete(examTypes)
   content = await insertContentFixture()

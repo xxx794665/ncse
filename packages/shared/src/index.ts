@@ -1,7 +1,8 @@
 /**
  * @ncse/shared — 前后端共用类型与常量。
  * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
- * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）；
+ * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）、
+ * 判分与错题本 DTO（T1-08c）；
  * 后续将承载：其余业务 DTO 等。
  */
 
@@ -90,8 +91,11 @@ export type PracticeSessionStatus = 'in_progress' | 'finished' | 'abandoned'
 /** 整卷模拟会话状态（in_progress 支持中断续做） */
 export type MockSessionStatus = 'in_progress' | 'submitted' | 'abandoned'
 
-/** 错题本条目状态：active 待消灭 / eliminated 已消灭（再次答错会复活为 active） */
-export type WrongBookStatus = 'active' | 'eliminated'
+/**
+ * 错题本条目状态（ADR-0010）：active 在错题本 / hard 在难点本（用户归置）/
+ * eliminated 已移除（软保留计数，答错任意在册题自动复活为 active）。
+ */
+export type WrongBookStatus = 'active' | 'eliminated' | 'hard'
 
 /** 汇入强化队列的原因：答错 / 超时 */
 export type ReinforceReason = 'wrong' | 'timeout'
@@ -220,6 +224,83 @@ export interface PracticeSessionSummary {
   answeredCount: number
   /** 创建时间（ISO-8601 UTC） */
   createdAt: string
+}
+
+/* ============ 判分与错题本 DTO（T1-08c 定稿，前端 T1-08f 直接复用） ============ */
+
+/**
+ * POST /api/practice/sessions/:id/answers 请求体。
+ * questionId 不属于该会话题目清单、answer 非该题选项键、durationMs 超出
+ * [0, 86400000) 整数区间时均 400（判分前拒绝，不落任何记录）。
+ */
+export interface SubmitPracticeAnswerRequest {
+  /** 题目 id（正整数，须属于该会话的 questionIds 清单） */
+  questionId: number
+  /** 用户作答（单选为选项键，如 'A'；须是该题 options[].key 之一） */
+  answer: string
+  /** 本题用时（毫秒，整数，0 ≤ 值 < 86400000） */
+  durationMs: number
+}
+
+/**
+ * 判分响应中的错题本上下文：该题经判分状态机执行后的在册状态。
+ * null = 不在册且本次答对（答对不在册不建行，ADR-0010）；
+ * 答对在册时前端据此弹处置提示（每次答对在册 active 题均提示，忽略 = 保持）。
+ */
+export interface WrongBookContext {
+  /** 状态机执行后的条目状态（答错任意在册题恒 'active'——复活语义） */
+  status: WrongBookStatus
+}
+
+/**
+ * POST /api/practice/sessions/:id/answers 响应体。
+ * correctAnswer/analysis 仅判分后回发（服务端判分共识，见 ADR-0009）；
+ * analysis 图片段 path 已投影为可渲染绝对 URL（/api/img/<键>，图片端点 T1-08d）。
+ */
+export interface SubmitPracticeAnswerResponse {
+  /** 题目 id（回显请求值） */
+  questionId: number
+  /** 是否答对（服务端与题目答案比对，单选为选项键相等） */
+  isCorrect: boolean
+  /** 是否超时（用时严格大于每题时限才超时；模块未知不判超时） */
+  isTimeout: boolean
+  /** 正确答案（选项键） */
+  correctAnswer: string
+  /** 解析富片段（图片段 path 已投影 URL） */
+  analysis: RichContent
+  /** 错题本上下文（null = 不在册且答对） */
+  wrongBook: WrongBookContext | null
+  /** 判分后的会话状态（全部作答完成则 'finished'，否则保持原值，ADR-0009） */
+  sessionStatus: PracticeSessionStatus
+}
+
+/**
+ * 错题本处置动作（ADR-0010：消灭由用户处置取代自动连对）：
+ * remove = 移出（软移除，计数保留） / to_hard = 归入难点本。
+ */
+export type WrongBookDisposeAction = 'remove' | 'to_hard'
+
+/** POST /api/wrong-book/:questionId/disposal 请求体 */
+export interface WrongBookDisposeRequest {
+  /** 处置动作（'remove' → eliminated；'to_hard' → hard） */
+  action: WrongBookDisposeAction
+}
+
+/**
+ * POST /api/wrong-book/:questionId/disposal 响应体。
+ * 处置只翻转状态，wrongCount/redoCount/consecutiveCorrect 原值保留（计数随作答演进）。
+ */
+export interface WrongBookDisposeResponse {
+  /** 题目 id（回显路径参数） */
+  questionId: number
+  /** 处置后的条目状态 */
+  status: WrongBookStatus
+  /** 累计答错次数（处置不变更） */
+  wrongCount: number
+  /** 累计重做次数（处置不变更） */
+  redoCount: number
+  /** 重做连续答对次数（处置不变更；仅供后续分析，ADR-0010） */
+  consecutiveCorrect: number
 }
 
 export * from './blueprint.js'
