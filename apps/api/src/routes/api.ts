@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { AppEnv } from '../types'
 import { authRoute } from './auth'
+import { imgRoute } from './img'
 import { practiceRoute } from './practice'
 import { wrongBookRoute } from './wrong-book'
 
@@ -12,6 +13,8 @@ import { wrongBookRoute } from './wrong-book'
  *   （建会话/详情/列表/判分，全路由 requireAuth）；
  * - T1-08c（已落地）错题本处置：wrongBookRoute → /api/wrong-book/*
  *   （在册条目移除/归难点本，ADR-0010，全路由 requireAuth）；
+ * - T1-08d（已落地）题目图片：imgRoute → /api/img/*（公开端点、不挂 requireAuth：
+ *   `<img>` 标签不带 Authorization 头，内容寻址 64hex 键即不可枚举的能力凭证，ADR-0007）；
  * - AI 代理（ADR-0005）：aiRoute → /api/ai/*（申论批改、AI 参考答案等 POST 转发）；
  * - 题库、做题记录等其余业务域：按任务进展追加。
  */
@@ -25,3 +28,6 @@ apiRoute.route('/practice', practiceRoute)
 
 // 错题本处置域：全端点 requireAuth（子路由内部 use），处置语义见 ADR-0010
 apiRoute.route('/wrong-book', wrongBookRoute)
+
+// 题目图片域：公开代理（无 requireAuth，理由见 imgRoute 文件头），键校验与缓存语义见 ADR-0007
+apiRoute.route('/img', imgRoute)

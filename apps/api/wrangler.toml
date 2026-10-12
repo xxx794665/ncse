@@ -16,3 +16,10 @@ binding = "DB"
 database_name = "ncse-db"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
+
+# R2 图片桶绑定（T1-08d 落地；题目图片内容寻址对象，键形态见 ADR-0007）。
+# bucket_name 为占位桶名：本地 `wrangler dev` 自动模拟本地 R2、不触远端；
+# T1-13 部署时 `wrangler r2 bucket create ncse-images` 换真实桶（本任务不创建任何远程资源）。
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "ncse-images"

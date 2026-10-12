@@ -20,11 +20,14 @@ export default defineConfig(async () => {
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
           // miniflare 层覆盖/追加绑定（优先级高于 wrangler 配置）：
-          // JWT_SECRET 为 test-only 常量；TEST_MIGRATIONS 仅供 setup 消费
+          // JWT_SECRET 为 test-only 常量；TEST_MIGRATIONS 仅供 setup 消费；
+          // IMAGES R2 桶显式与 wrangler.toml 同名（绑定名 → 桶名映射，miniflare V4 选项形态），
+          // vitest 内 R2 为 miniflare 本地模拟，与 `wrangler dev` 的 .wrangler/state 本地态是不同存储目录。
           bindings: {
             JWT_SECRET: TEST_JWT_SECRET,
             TEST_MIGRATIONS: migrations,
           },
+          r2Buckets: { IMAGES: 'ncse-images' },
         },
       }),
     ],

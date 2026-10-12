@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception'
 import { and, asc, countDistinct, desc, eq, inArray, notExists, sql } from 'drizzle-orm'
 import {
   deriveQuestionTimeLimit,
+  IMAGE_KEY_PATTERN,
   XINGCE_BLUEPRINTS,
 } from '@ncse/shared'
 import type {
@@ -49,13 +50,6 @@ const XINGCE_MODULE_CODES: readonly XingceModuleCode[] = [
 const ALLOWED_QUESTION_COUNTS: readonly number[] = [5, 10, 20, 30]
 /** 缺省题数（前端不传 count 时） */
 const DEFAULT_QUESTION_COUNT = 10
-
-/**
- * R2 图片内容寻址键形态（ADR-0007：img/<源字节 sha256 64hex>.webp|.gif）。
- * 仅该形态才投影为 /api/img URL；其余（源仓库相对路径等历史数据）原样保留，防误构造。
- * /api/img 端点本身属 T1-08d，本域只定 URL 约定。
- */
-const IMAGE_KEY_PATTERN = /^img\/[0-9a-f]{64}\.(webp|gif)$/
 
 /** 会话 404 文案：不存在与不属于当前用户同一句（防存在性探测） */
 const SESSION_NOT_FOUND_MESSAGE = '会话不存在'
@@ -242,7 +236,10 @@ async function fetchLatestRecordsByQuestion(
   return map
 }
 
-/** 图片段 path 投影：仅 KEYED 形态拼为 /api/img 绝对 URL，其余原样（见 IMAGE_KEY_PATTERN 注释） */
+/**
+ * 图片段 path 投影：仅 KEYED 形态（shared IMAGE_KEY_PATTERN，与 img 端点键校验共用，勿单方改）
+ * 拼为 /api/img 绝对 URL，其余（源相对路径等历史数据）原样保留，防误构造。
+ */
 function projectImagePath(path: string, requestUrl: string): string {
   return IMAGE_KEY_PATTERN.test(path) ? new URL(`/api/img/${path}`, requestUrl).href : path
 }

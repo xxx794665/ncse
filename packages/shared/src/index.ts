@@ -67,6 +67,12 @@ export type RichSegment = { type: 'text'; text: string } | { type: 'image'; path
 /** 完整富片段序列（D1 中以 JSON 数组存于 TEXT 列，Drizzle text json 模式序列化/反序列化） */
 export type RichContent = RichSegment[]
 
+/**
+ * R2 图片内容寻址键形态（ADR-0007：img/<源字节 sha256 64hex>.webp|.gif）。
+ * DB 恒存裸键，访问 URL = /api/img/<裸键>；practice 域投影与 img 端点键校验两端共用，勿单方改。
+ */
+export const IMAGE_KEY_PATTERN = /^img\/[0-9a-f]{64}\.(webp|gif)$/
+
 /** 单选项：key 为 answer 引用的选项键（如 'A'/'B'），content 为选项内容富片段 */
 export interface QuestionOption {
   key: string

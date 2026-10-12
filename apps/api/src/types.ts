@@ -5,13 +5,17 @@ import type { AuthUser } from '@ncse/shared'
  * 约定：凡绑定与凭据一律走 wrangler 配置与 secret，不写入源码：
  * - T1-02（已落地）：D1 数据库（wrangler.toml [[d1_databases]]，绑定名 DB；schema 与迁移见 src/db/）；
  * - T1-03（已落地）：JWT_SECRET（生产 `wrangler secret put JWT_SECRET` 注入，本地走不入库的 .dev.vars，
- *   模板见 .dev.vars.example；源码/示例/测试中只允许出现明显不可用的占位值）。
+ *   模板见 .dev.vars.example；源码/示例/测试中只允许出现明显不可用的占位值）；
+ * - T1-08d（已落地）：R2 题目图片桶（wrangler.toml [[r2_buckets]]，绑定名 IMAGES；
+ *   内容寻址对象，键形态与访问端点见 ADR-0007 与 src/routes/img.ts）。
  */
 export interface Env {
   /** D1 数据库绑定（database_name = ncse-db）；类型化客户端经 src/db/index.ts 的 createDb(env) 获取 */
   DB: D1Database
   /** JWT 签名密钥（HS256），仅运行时从环境读取 */
   JWT_SECRET: string
+  /** R2 题目图片桶（bucket_name = ncse-images），对象键为内容寻址键（ADR-0007） */
+  IMAGES: R2Bucket
 }
 
 /**
