@@ -21,8 +21,15 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题实页（T1-08f）；placeholder=未实现功能占位 */
-export type AppRouteKind = 'home' | 'design' | 'login' | 'register' | 'practice' | 'placeholder'
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；placeholder=未实现功能占位 */
+export type AppRouteKind =
+  | 'home'
+  | 'design'
+  | 'login'
+  | 'register'
+  | 'practice'
+  | 'practice-session'
+  | 'placeholder'
 
 export interface AppRoute {
   /** 路由路径（'/' 为首页，注册为 index 路由） */
@@ -37,7 +44,7 @@ export interface AppRoute {
   requiresAuth?: boolean
   /** 内部路由（T1-08f）：不进首页速记入口（如作答页等二级页，仅经页内导航到达） */
   internal?: boolean
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice）不设 */
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session）不设 */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -67,11 +74,9 @@ export const APP_ROUTES: AppRoute[] = [
     key: 'practice-session',
     title: '专项刷题 · 作答',
     icon: BookOpen,
-    kind: 'placeholder',
+    kind: 'practice-session',
     requiresAuth: true,
     internal: true,
-    milestone: 'M1',
-    description: '作答页建设中（T1-08f 已接入导航，T1-08g 落地）。',
   },
   {
     path: '/mock',

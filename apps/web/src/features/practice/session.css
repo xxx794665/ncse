@@ -1,0 +1,314 @@
+/* 专项刷题·作答页（T1-08g）：顶部信息区 + 进度条 + 单题作答 + 底部导航 + 处置弹窗 + 完成小结
+   移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
+   字面量均为规范定值：图标 20（§5 按钮/导航档）、选项热区高 44（§7.1）、
+   焦点环 2px（§6.1）、1px 边框（例外）；宽用百分比（数据/布局相对，同 practice.css 先例） */
+
+/* 单题作答阅读流：列宽收窄至阅读最大宽并居中（§3.3 阅读层次） */
+.session {
+  max-width: var(--layout-max-reading);
+  margin: 0 auto;
+}
+
+/* ===== 顶部信息区 ===== */
+
+.session-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.session-topbar__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+}
+
+.session-topbar__back:hover {
+  color: var(--color-text-primary);
+}
+
+.session-topbar__back:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* 返回入口图标 20px（§5 导航/按钮档） */
+.session-topbar__back > svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 模块名占满剩余空间，把会话状态 Tag 挤到行尾 */
+.session-topbar__module {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+/* ===== 进度条（形态同模块选择页会话卡：轨道高 --spacing-xs，填充主色） ===== */
+
+.session-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-lg);
+}
+
+.session-progress__track {
+  flex: 1;
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.session-progress__fill {
+  height: 100%;
+  background-color: var(--color-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--duration-normal) var(--easing-standard);
+}
+
+/* 进度数值：mono + tabular-nums（§3.1） */
+.session-progress__text {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
+
+/* ===== 完成小结 ===== */
+
+.session-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.session-summary__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.session-summary__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.session-summary__actions {
+  display: flex;
+}
+
+/* ===== 处置成功轻提示（success-soft 提示条，§2.2 语义色成对） ===== */
+
+.session-note {
+  margin: 0 0 var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-success-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-success-soft-text);
+}
+
+/* ===== 题目卡判分标记（meta 槽：答对/答错/超时） ===== */
+
+.session-question-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+}
+
+/* ===== 提交区 ===== */
+
+.session-submit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+/* 判分失败（如 400）：danger-soft 提示条占满行宽（§6.8 反馈件） */
+.session-submit__error {
+  align-self: stretch;
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 移动端主操作通栏（§6.1：lg 为移动端主操作档）；≥768px 恢复内容宽 */
+.session-submit__button {
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .session-submit__button {
+    width: auto;
+  }
+}
+
+/* ===== 底部导航 ===== */
+
+.session-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+/* 「下一题」图标后置（Button 仅前置图标插槽，行内反转实现尾随箭头） */
+.session-actions__next {
+  flex-direction: row-reverse;
+}
+
+/* ===== 加载错误态（提示条 + 重试/返回，T1-08f 模式） ===== */
+
+.session-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.session-error__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+.session-error__actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--spacing-xs);
+}
+
+/* ===== 加载骨架（§6.8：bg-muted 圆角块 + 呼吸动画；条高取所代表行的字号 token） ===== */
+
+.session-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.session-skeleton__line {
+  height: var(--font-size-caption);
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-xs);
+  animation: session-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+.session-skeleton__line--bar {
+  width: 45%;
+  height: var(--font-size-title);
+}
+
+.session-skeleton__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+@media (min-width: 1024px) {
+  .session-skeleton__card {
+    padding: var(--spacing-lg);
+  }
+}
+
+.session-skeleton__line--stem {
+  width: 70%;
+  height: var(--font-size-stem);
+  margin-bottom: var(--spacing-xs);
+}
+
+/* 选项块高取 §7.1 选项热区定值 44px */
+.session-skeleton__option {
+  height: 44px;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-md);
+  animation: session-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+@keyframes session-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-skeleton__line,
+  .session-skeleton__option {
+    animation: none;
+  }
+}
+
+/* ===== 错题处置弹窗 ===== */
+
+.session-dispose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+/* 处置失败：danger-soft 提示条（保留弹窗供重试） */
+.session-dispose__error {
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+.session-dispose__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-primary);
+}
+
+.session-dispose__list {
+  margin: 0;
+  padding-left: var(--spacing-lg);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.session-dispose__list > li + li {
+  margin-top: var(--spacing-2xs);
+}
