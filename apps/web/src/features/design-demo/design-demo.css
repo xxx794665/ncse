@@ -92,6 +92,18 @@
   gap: var(--spacing-md);
 }
 
+/* 富片段渲染演示：变体标签 + 渲染块（标签不拉伸、内容占满栏宽） */
+.demo-rich-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--spacing-xs);
+}
+
+.demo-rich-block > .ncse-rich-content {
+  align-self: stretch;
+}
+
 /* 亮暗对照：两面板强制 data-theme（tokens.css 的 [data-theme] 对任意元素生效） */
 .demo-compare {
   display: grid;

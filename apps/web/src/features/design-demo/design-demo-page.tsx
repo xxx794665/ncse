@@ -27,6 +27,7 @@ import {
   Input,
   Modal,
   QuestionCard,
+  RichContentRenderer,
   Select,
   StatChip,
   Tag,
@@ -34,6 +35,7 @@ import {
   ThemeModeCycleButton,
   TopNav,
 } from '../../components'
+import type { RichContent } from '@ncse/shared'
 import './design-demo.css'
 
 /** 图片插槽示例图（内联 SVG data URI，不依赖外部资源） */
@@ -46,6 +48,102 @@ const DEMO_IMAGE =
       '<text x="320" y="248" font-size="28" text-anchor="middle" fill="#475569">题目图片插槽示例 4:3</text>' +
       '</svg>',
   )
+
+/* ===== 富片段渲染演示内容（全部虚构合成文案与合成图，ADR-0004：真实题库数据不入仓库） ===== */
+
+/** 富片段演示图一：柱状图（4:3，内联 SVG data URI，虚构示意数据） */
+const DEMO_RICH_CHART =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">' +
+      '<rect width="640" height="480" fill="#F8FAFC"/>' +
+      '<text x="320" y="52" font-size="24" text-anchor="middle" fill="#334155">示例 · 某镇四季作物产量（虚构数据）</text>' +
+      '<line x1="70" y1="400" x2="590" y2="400" stroke="#94A3B8" stroke-width="2"/>' +
+      '<rect x="115" y="240" width="70" height="160" fill="#3B82F6"/>' +
+      '<rect x="235" y="180" width="70" height="220" fill="#60A5FA"/>' +
+      '<rect x="355" y="120" width="70" height="280" fill="#1D4ED8"/>' +
+      '<rect x="475" y="270" width="70" height="130" fill="#93C5FD"/>' +
+      '<text x="150" y="432" font-size="18" text-anchor="middle" fill="#64748B">春</text>' +
+      '<text x="270" y="432" font-size="18" text-anchor="middle" fill="#64748B">夏</text>' +
+      '<text x="390" y="432" font-size="18" text-anchor="middle" fill="#64748B">秋</text>' +
+      '<text x="510" y="432" font-size="18" text-anchor="middle" fill="#64748B">冬</text>' +
+      '</svg>',
+  )
+
+/** 富片段演示图二：数据一览表（宽幅，内联 SVG data URI，虚构示意数据） */
+const DEMO_RICH_TABLE =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="360">' +
+      '<rect width="800" height="360" fill="#F8FAFC"/>' +
+      '<text x="400" y="48" font-size="22" text-anchor="middle" fill="#334155">示例 · 书香街区运营数据一览（虚构数据）</text>' +
+      '<rect x="60" y="84" width="680" height="56" fill="#DBEAFE"/>' +
+      '<line x1="60" y1="140" x2="740" y2="140" stroke="#94A3B8"/>' +
+      '<line x1="60" y1="196" x2="740" y2="196" stroke="#94A3B8"/>' +
+      '<line x1="60" y1="252" x2="740" y2="252" stroke="#94A3B8"/>' +
+      '<line x1="60" y1="308" x2="740" y2="308" stroke="#94A3B8"/>' +
+      '<line x1="390" y1="84" x2="390" y2="308" stroke="#94A3B8"/>' +
+      '<line x1="560" y1="84" x2="560" y2="308" stroke="#94A3B8"/>' +
+      '<text x="90" y="118" font-size="17" fill="#334155">指标</text>' +
+      '<text x="410" y="118" font-size="17" fill="#334155">改造前</text>' +
+      '<text x="580" y="118" font-size="17" fill="#334155">运营一年</text>' +
+      '<text x="90" y="174" font-size="16" fill="#475569">月均客流（千人）</text>' +
+      '<text x="410" y="174" font-size="16" fill="#475569">12</text>' +
+      '<text x="580" y="174" font-size="16" fill="#475569">31</text>' +
+      '<text x="90" y="230" font-size="16" fill="#475569">书店营收构成</text>' +
+      '<text x="410" y="230" font-size="16" fill="#475569">单一售书</text>' +
+      '<text x="580" y="230" font-size="16" fill="#475569">售书+活动+饮品</text>' +
+      '<text x="90" y="286" font-size="16" fill="#475569">居民满意度（抽样）</text>' +
+      '<text x="410" y="286" font-size="16" fill="#475569">未调查</text>' +
+      '<text x="580" y="286" font-size="16" fill="#475569">86%</text>' +
+      '</svg>',
+  )
+
+/** 故意构造的不可解码图片（离线稳定触发 error，演示失败占位） */
+const DEMO_RICH_BROKEN = 'data:image/png;base64,aGVsbG8h'
+
+/** 题干变体示例：两段文字夹一张图片段 */
+const DEMO_RICH_STEM: RichContent = [
+  { type: 'text', text: '某镇农业站对四季作物产量进行了抽样统计，结果如下图所示。' },
+  { type: 'image', path: DEMO_RICH_CHART, alt: '某镇四季作物产量柱状图（虚构示例数据）' },
+  { type: 'text', text: '根据上图，下列哪一结论能够从图中推出？' },
+]
+
+/** 选项变体示例 */
+const DEMO_RICH_OPTION: RichContent = [
+  { type: 'text', text: '秋季作物产量高于其他三季，且春季产量低于夏季。' },
+]
+
+/** 材料变体示例：三段文字夹一张宽幅表格图 */
+const DEMO_RICH_MATERIAL: RichContent = [
+  {
+    type: 'text',
+    text: '某市推进「书香街区」建设，在老街改造中保留独立书店，并引入借阅驿站与阅读角，尝试以阅读空间留住街区烟火气。',
+  },
+  {
+    type: 'text',
+    text: '运营一年后，街区客流明显回升，书店营收结构从单一售书转向「售书 + 活动 + 饮品」的复合模式。',
+  },
+  { type: 'image', path: DEMO_RICH_TABLE, alt: '书香街区运营数据一览表（虚构示例数据）' },
+  {
+    type: 'text',
+    text: '受访居民表示，阅读空间让街区「慢了下来」，但活动时段的噪声也引发部分争议，管理方正酝酿分时使用方案。',
+  },
+]
+
+/** 解析变体示例 */
+const DEMO_RICH_ANALYSIS: RichContent = [
+  { type: 'text', text: '图中秋季柱形最高，春季低于夏季，故两项比较结论均可由图直接推出。' },
+  {
+    type: 'text',
+    text: '注意区分「图中直接呈现」与「过度推断」：产量变化的原因图中并未给出，凡涉及归因的选项均应排除。',
+  },
+]
+
+/** 图片加载失败占位示例（src 不可解码，离线稳定触发失败态） */
+const DEMO_RICH_ERROR: RichContent = [
+  { type: 'image', path: DEMO_RICH_BROKEN, alt: '故意构造的损坏图片（演示失败占位）' },
+]
 
 const TOP_NAV_ITEMS = [
   { key: 'practice', label: '刷题', href: '/design' },
@@ -295,6 +393,35 @@ export function DesignDemoPage() {
 
       <Section title="题目卡片 QuestionCard" desc="§6.5/§7.1/§7.4：选项五态、判分后禁点并自动展开解析、收藏/标记、图片插槽、知识点标签。" compare={compare}>
         <QuestionCardDemo />
+      </Section>
+
+      <Section
+        title="富片段渲染 RichContentRenderer"
+        desc="§3.3/§7.3：题干 / 选项 / 解析 / 材料四变体排版；图片段懒加载 + 4:3 骨架占位 + 失败可读占位，点击图片全屏查看（Esc / 点击遮罩关闭）。内容为虚构合成数据。"
+        compare={compare}
+      >
+        <div className="demo-column">
+          <div className="demo-rich-block">
+            <Tag tone="muted">题干 stem（多段 + 图片段）</Tag>
+            <RichContentRenderer variant="stem" content={DEMO_RICH_STEM} />
+          </div>
+          <div className="demo-rich-block">
+            <Tag tone="muted">选项 option</Tag>
+            <RichContentRenderer variant="option" content={DEMO_RICH_OPTION} />
+          </div>
+          <div className="demo-rich-block">
+            <Tag tone="muted">材料 material（多段 + 宽幅图片段）</Tag>
+            <RichContentRenderer variant="material" content={DEMO_RICH_MATERIAL} />
+          </div>
+          <div className="demo-rich-block">
+            <Tag tone="muted">解析 analysis</Tag>
+            <RichContentRenderer variant="analysis" content={DEMO_RICH_ANALYSIS} />
+          </div>
+          <div className="demo-rich-block">
+            <Tag tone="muted">图片加载失败占位</Tag>
+            <RichContentRenderer variant="stem" content={DEMO_RICH_ERROR} />
+          </div>
+        </div>
       </Section>
 
       <Section title="模态 Modal（移动端 Sheet 形态）" desc="PC 居中对话框（≤560px）；移动端底部 Sheet 滑入。" compare={compare}>

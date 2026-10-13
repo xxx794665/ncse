@@ -73,7 +73,7 @@
   max-width: var(--layout-max-reading);
 }
 
-/* 图片插槽（§7.3）：块级居中、max-h 480px、radius-md + border-subtle */
+/* 图片插槽（§7.3）：块级居中、max-h --layout-max-image（480px）、radius-md + border-subtle */
 .ncse-question-card__image {
   margin-top: var(--spacing-md);
   text-align: center;
@@ -82,7 +82,7 @@
 .ncse-question-card__image img {
   display: block;
   max-width: 100%;
-  max-height: 480px;
+  max-height: var(--layout-max-image);
   margin: 0 auto;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);

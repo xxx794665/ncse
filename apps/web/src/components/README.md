@@ -14,6 +14,7 @@
 | TopNav | top-nav.tsx / top-nav.css | §6.4 | ≥1024px：64px 吸顶、stuck 后 shadow-xl、激活项 primary-text + 2px 指示条 |
 | BottomTab | bottom-tab.tsx / bottom-tab.css | §6.4 | <1024px：56px + 安全区；激活 primary-text，未激活 text-tertiary |
 | QuestionCard | question-card.tsx / question-card.css | §6.5/§7.1/§7.3/§7.4 | 选项五态；判分禁点 + 解析自动展开；mock 模式隐藏解析；图片/解析/知识点插槽 |
+| RichContentRenderer | rich-content-renderer.tsx / .css | §3.3/§7.1/§7.3 | 富片段四变体（stem/option/analysis/material）；图片插槽懒加载 + 4:3 骨架占位 + 失败可读占位 + lightbox 全屏查看 |
 | StatChip | stat-chip.tsx / stat-chip.css | §6.6 | 图标 16 + mono/tabular-nums 数值 + aux 标签；语义色仅用于图标 |
 | Tag | tag.tsx / tag.css | §7.4④/§2.2 | muted / 六语义 tone（soft 底 + soft-text 成对）；可点击变体 |
 | EmptyPlaceholder | empty-placeholder.tsx / empty-placeholder.css | §6.7 | 标题 + 未完成说明 + 里程碑徽章 + 返回首页按钮 |
@@ -21,6 +22,6 @@
 
 ## 约束
 
-- 全部样式只引用 §9 语义 token（var(--…)）；组件内出现的字面量均为规范定值（控件高 32/40/48、导航 64/56、徽标 20px、选项热区 44px、图片 max-h 480px、断点 1024px 对应 --breakpoint-pc 等），新需求先在既有 token 内解决，确需新增先回规范 §9 登记。
+- 全部样式只引用 §9 语义 token（var(--…)）；组件内出现的字面量均为规范定值（控件高 32/40/48、导航 64/56、徽标 20px、选项热区 44px、断点 1024px 对应 --breakpoint-pc 等），新需求先在既有 token 内解决，确需新增先回规范 §9 登记。
 - 图标统一 lucide-react，strokeWidth 默认 2，尺寸阶梯 16/20/24（§5）。
 - 演示页：/design（分区块 + 亮暗对照 + 主题切换控件）。

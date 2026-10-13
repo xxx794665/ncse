@@ -1,0 +1,217 @@
+/* RichContentRenderer（§3.3/§7.1/§7.3，T1-08e）：富片段 = 段落级 <p> + 图片插槽 figure */
+
+.ncse-rich-content {
+  display: flex;
+  flex-direction: column;
+  /* 颜色恒 text-primary：材料也不降级（§3.3，材料同样要求 4.5:1） */
+  color: var(--color-text-primary);
+}
+
+/* ===== 变体排版（§3.3 三级 + §3.2 解析正文） ===== */
+
+.ncse-rich-content--stem {
+  /* 题干多段落间距（§7.1 定值） */
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-stem);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-stem);
+}
+
+.ncse-rich-content--option {
+  /* 选项为短文本紧凑语境，段距取紧凑档 */
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-option);
+  font-weight: var(--font-weight-regular);
+  /* §3.3 选项行高 1.625 = --line-height-relaxed */
+  line-height: var(--line-height-relaxed);
+}
+
+.ncse-rich-content--analysis {
+  /* 与既有解析区内部块距一致（question-card 解析 body gap） */
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-analysis);
+}
+
+.ncse-rich-content--material {
+  /* 长文阅读段距取标准组距（16px ≈ 1em），配合 loose 行高 */
+  gap: var(--spacing-md);
+  font-size: var(--font-size-material);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-loose);
+}
+
+.ncse-rich-content__text {
+  margin: 0;
+}
+
+/* ===== 图片插槽（§7.3）：块级居中、max-h --layout-max-image、radius-md + 1px border-subtle ===== */
+
+.ncse-rich-content__figure {
+  position: relative;
+  margin: 0;
+  text-align: center;
+}
+
+/* 打开 lightbox 的触发钮：inline-block 收缩包裹图片，配合 figure text-align 居中 */
+.ncse-rich-content__image-btn {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+}
+
+.ncse-rich-content__image-btn:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-rich-content__image {
+  display: block;
+  max-width: 100%;
+  max-height: var(--layout-max-image);
+  margin: 0 auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+/* 加载中：触发钮隐形覆盖骨架（保持图片可加载），且不可点击（键盘 Tab 序由 tabIndex 控制） */
+.ncse-rich-content__figure.is-loading .ncse-rich-content__image-btn {
+  position: absolute;
+  inset: 0;
+  max-width: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 加载中骨架块（§6.8/§7.3）：固定 4:3 占位防布局跳动，bg-muted + 呼吸动画 */
+.ncse-rich-content__skeleton {
+  /* 4:3（§7.3 定值）且折算高度不超过图片最大高 */
+  width: min(100%, calc(var(--layout-max-image) * 4 / 3));
+  margin: 0 auto;
+  aspect-ratio: 4 / 3;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-md);
+  animation: ncse-rich-content-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+@keyframes ncse-rich-content-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ncse-rich-content__skeleton {
+    animation: none;
+  }
+}
+
+/* 失败占位：可读说明（含 alt 文本），不留破图图标；
+   bg-muted 底上文字按 §2.2 至少 text-secondary（tertiary/muted 亮色组合不达标） */
+.ncse-rich-content__image-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-xs);
+  max-width: 100%;
+  padding: var(--spacing-lg);
+  background-color: var(--color-bg-muted);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+}
+
+.ncse-rich-content__image-error > svg {
+  /* 图标尺寸阶梯：空状态/占位 24px（§5） */
+  width: 24px;
+  height: 24px;
+}
+
+.ncse-rich-content__image-error-text {
+  font-weight: var(--font-weight-medium);
+}
+
+/* ===== lightbox 全屏查看：遮罩 + contain 居中（层级做法参照 modal.css） ===== */
+
+.ncse-rich-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-overlay);
+  outline: none;
+  animation: ncse-rich-lightbox-fade var(--duration-slow) var(--easing-standard);
+}
+
+.ncse-rich-lightbox__toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 悬浮控制钮：bg-elevated + border-subtle + shadow（暗色层级三件套 §4.4），亮暗遮罩上均可辨 */
+.ncse-rich-lightbox__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 32px = 控件 sm 高（§6.1 定值） */
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--easing-standard);
+}
+
+.ncse-rich-lightbox__btn:hover {
+  background-color: var(--color-bg-muted);
+}
+
+.ncse-rich-lightbox__btn:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.ncse-rich-lightbox__btn > svg {
+  /* 图标尺寸阶梯：按钮 20px（§5） */
+  width: 20px;
+  height: 20px;
+}
+
+.ncse-rich-lightbox__stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: var(--spacing-md);
+}
+
+.ncse-rich-lightbox__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+
+@keyframes ncse-rich-lightbox-fade {
+  from {
+    opacity: 0;
+  }
+}

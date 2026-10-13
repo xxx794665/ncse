@@ -186,6 +186,7 @@
   --layout-min-placeholder: 320px; /* 占位区最小高（§6.7，T0-06 补登记） */
   --layout-min-textarea: 96px; /* 多行输入最小高，约 3 行（T0-06 补登记） */
   --layout-demo-frame: 240px; /* 演示页导航演示框高（/design 同屏对照用，T0-06 补登记） */
+  --layout-max-image: 480px; /* 题目图片插槽最大高（§7.3 定值，T1-08e 补登记） */
 
   --z-sticky: 100;
   --z-nav: 200;
@@ -196,6 +197,7 @@
   --duration-fast: 120ms;
   --duration-normal: 200ms;
   --duration-slow: 320ms;
+  --duration-breath: 1.2s; /* 骨架屏呼吸动画周期（§6.8 定值，T1-08e 补登记） */
 
   --easing-standard: cubic-bezier(0.2, 0, 0, 1);
   --easing-decelerate: cubic-bezier(0, 0, 0.2, 1);

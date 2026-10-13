@@ -21,6 +21,8 @@ export type {
   QuestionOption,
   QuestionOptionAnalysis,
 } from './question-card'
+export { RichContentRenderer } from './rich-content-renderer'
+export type { RichContentRendererProps, RichContentVariant } from './rich-content-renderer'
 export { StatChip } from './stat-chip'
 export type { StatChipProps, StatChipTone } from './stat-chip'
 export { Tag } from './tag'
