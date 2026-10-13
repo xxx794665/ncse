@@ -21,8 +21,8 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；placeholder=未实现功能占位 */
-export type AppRouteKind = 'home' | 'design' | 'login' | 'register' | 'placeholder'
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题实页（T1-08f）；placeholder=未实现功能占位 */
+export type AppRouteKind = 'home' | 'design' | 'login' | 'register' | 'practice' | 'placeholder'
 
 export interface AppRoute {
   /** 路由路径（'/' 为首页，注册为 index 路由） */
@@ -35,7 +35,9 @@ export interface AppRoute {
   kind: AppRouteKind
   /** 受保护路由（T1-16）：匿名访问被 RequireAuth 重定向 /login（state.from 原路返回） */
   requiresAuth?: boolean
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register）不设 */
+  /** 内部路由（T1-08f）：不进首页速记入口（如作答页等二级页，仅经页内导航到达） */
+  internal?: boolean
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice）不设 */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -56,12 +58,20 @@ export const APP_ROUTES: AppRoute[] = [
     key: 'practice',
     title: '专项刷题',
     icon: BookOpen,
+    kind: 'practice',
+    requiresAuth: true,
+    summary: '按模块 / 知识点逐题练习与判分',
+  },
+  {
+    path: '/practice/sessions/:id',
+    key: 'practice-session',
+    title: '专项刷题 · 作答',
+    icon: BookOpen,
     kind: 'placeholder',
     requiresAuth: true,
+    internal: true,
     milestone: 'M1',
-    description:
-      '按模块或知识点的日常练习：逐题判分与解析、蓝图计时与超时告警、可中断续做（功能清单 F1-5/F1-6）。',
-    summary: '按模块 / 知识点逐题练习与判分',
+    description: '作答页建设中（T1-08f 已接入导航，T1-08g 落地）。',
   },
   {
     path: '/mock',

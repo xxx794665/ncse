@@ -23,7 +23,8 @@ function greetingByHour(hour: number): string {
 export function HomePage() {
   const navigate = useNavigate()
   const { status, user } = useAuth()
-  const entries = APP_ROUTES.filter((route) => route.kind !== 'home')
+  // 首页速记入口：排除首页自身与内部路由（internal，如作答页等仅经页内导航到达的二级页）
+  const entries = APP_ROUTES.filter((route) => route.kind !== 'home' && route.internal !== true)
   const greeting = greetingByHour(new Date().getHours())
   // 已登录显示用户名问候；匿名/恢复中保持通用问候（恢复完成后自然切换，不闪烁）
   const greetingTitle = status === 'authenticated' && user !== null

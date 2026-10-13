@@ -3,3 +3,4 @@ export { API_BASE_URL, ApiError, apiFetch, setUnauthorizedHandler } from './clie
 export type { ApiFetchOptions, UnauthorizedHandler } from './client'
 export { clearAuthToken, getAuthToken, setAuthToken } from './auth-token'
 export { fetchMeApi, loginApi, registerApi } from './auth-api'
+export { createPracticeSessionApi, fetchPracticeSessionsApi } from './practice-api'
