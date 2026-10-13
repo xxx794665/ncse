@@ -1,0 +1,79 @@
+/* 认证页（登录/注册，T1-16）：AppLayout 内居中窄卡片 + 表单纵向排布；只引用语义 token（§9） */
+
+.ncse-auth-page {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--spacing-xl);
+}
+
+/* 断点值对应 --breakpoint-pc（§4.2） */
+@media (min-width: 1024px) {
+  .ncse-auth-page {
+    padding-top: var(--spacing-2xl);
+  }
+}
+
+/* 卡片最大宽 --layout-max-auth（§9 表 E，T1-16 登记） */
+.ncse-auth-card {
+  width: 100%;
+  max-width: var(--layout-max-auth);
+}
+
+.ncse-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.ncse-auth-form__title {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+/* 表单级错误（API 失败）：danger 色系提示条 */
+.ncse-auth-form__error {
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 主操作整宽（§6.1：lg 为移动端主操作档） */
+.ncse-auth-form__submit {
+  width: 100%;
+  margin-top: var(--spacing-xs);
+}
+
+.ncse-auth-form__switch {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.ncse-auth-form__switch a {
+  color: var(--color-text-link);
+  text-decoration: none;
+}
+
+.ncse-auth-form__switch a:hover {
+  text-decoration: underline;
+}
+
+/* RequireAuth 恢复中最小加载态（不跳转，防闪烁；§6.8 不做整页 spinner） */
+.ncse-auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--layout-min-placeholder);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-tertiary);
+}

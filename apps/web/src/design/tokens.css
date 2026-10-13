@@ -187,6 +187,7 @@
   --layout-min-textarea: 96px; /* 多行输入最小高，约 3 行（T0-06 补登记） */
   --layout-demo-frame: 240px; /* 演示页导航演示框高（/design 同屏对照用，T0-06 补登记） */
   --layout-max-image: 480px; /* 题目图片插槽最大高（§7.3 定值，T1-08e 补登记） */
+  --layout-max-auth: 400px; /* 认证页（登录/注册）卡片最大宽（T1-16 补登记） */
 
   --z-sticky: 100;
   --z-nav: 200;

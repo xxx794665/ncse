@@ -119,3 +119,12 @@
   width: 20px;
   height: 20px;
 }
+
+/* 已登录账号区用户名（T1-16）：配合右侧登出图标按钮（复用 __account 形态） */
+.ncse-top-nav__username {
+  padding: 0 var(--spacing-xs);
+  font-size: var(--font-size-body-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}

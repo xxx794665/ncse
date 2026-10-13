@@ -2,14 +2,16 @@
  * 首页仪表盘骨架（T0-05）：问候 + 模块速记入口
  * 入口取自路由注册表（app-routes.ts，首页自身除外），未实现入口点击后进入统一占位页；
  * 「继续上次」「今日任务」等真实数据区由后续里程碑接入
+ * 问候区认证态感知（T1-16）：已登录带用户名问候，匿名/恢复中沿用通用问候（不闪烁）
  */
 
 import { useNavigate } from 'react-router-dom'
 import { Card, Tag } from '../../components'
 import { APP_ROUTES } from '../../app-routes'
+import { useAuth } from '../auth/auth-context'
 import './home-page.css'
 
-/** 按当前小时给问候语（账号体系落地前不带称呼，F1-4 后接入昵称） */
+/** 按当前小时给问候语 */
 function greetingByHour(hour: number): string {
   if (hour < 6) return '夜深了'
   if (hour < 12) return '早上好'
@@ -20,12 +22,18 @@ function greetingByHour(hour: number): string {
 
 export function HomePage() {
   const navigate = useNavigate()
+  const { status, user } = useAuth()
   const entries = APP_ROUTES.filter((route) => route.kind !== 'home')
+  const greeting = greetingByHour(new Date().getHours())
+  // 已登录显示用户名问候；匿名/恢复中保持通用问候（恢复完成后自然切换，不闪烁）
+  const greetingTitle = status === 'authenticated' && user !== null
+    ? `${greeting}，${user.username}`
+    : greeting
 
   return (
     <div className="home">
       <header className="home-hero">
-        <h1 className="home-hero__title">{greetingByHour(new Date().getHours())}</h1>
+        <h1 className="home-hero__title">{greetingTitle}</h1>
         <p className="home-hero__desc">
           目标 2027 省考 · 各功能模块按里程碑陆续上线，未完成的入口先进入占位页。
         </p>
@@ -58,7 +66,7 @@ export function HomePage() {
                 {route.milestone ? (
                   <Tag tone="muted">里程碑 {route.milestone}</Tag>
                 ) : (
-                  <Tag tone="primary">M0 · 已可用</Tag>
+                  <Tag tone="primary">已可用</Tag>
                 )}
               </div>
             </Card>

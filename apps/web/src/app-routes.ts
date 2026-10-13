@@ -3,6 +3,7 @@
  * - 架构设计 §9：React Router 路由全量注册（含占位路由）；功能页按 features/* 域组织
  * - 未实现功能统一渲染 EmptyPlaceholder（设计规范 §6.7、ADR-0006），里程碑按 docs/功能清单.md 的 M 阶段标注
  * - 新增页面先回本表登记，App.tsx 按本表生成 <Routes>，首页速记入口同源取数
+ * - requiresAuth 标记受保护路由（T1-16）：App.tsx 据此包 RequireAuth 守卫（匿名 → /login）
  */
 
 import type { LucideIcon } from 'lucide-react'
@@ -20,8 +21,8 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；placeholder=未实现功能占位 */
-export type AppRouteKind = 'home' | 'design' | 'placeholder'
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；placeholder=未实现功能占位 */
+export type AppRouteKind = 'home' | 'design' | 'login' | 'register' | 'placeholder'
 
 export interface AppRoute {
   /** 路由路径（'/' 为首页，注册为 index 路由） */
@@ -32,7 +33,9 @@ export interface AppRoute {
   /** 功能入口图标（设计规范 §5，24px 功能入口档） */
   icon: LucideIcon
   kind: AppRouteKind
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design）不设 */
+  /** 受保护路由（T1-16）：匿名访问被 RequireAuth 重定向 /login（state.from 原路返回） */
+  requiresAuth?: boolean
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register）不设 */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -54,6 +57,7 @@ export const APP_ROUTES: AppRoute[] = [
     title: '专项刷题',
     icon: BookOpen,
     kind: 'placeholder',
+    requiresAuth: true,
     milestone: 'M1',
     description:
       '按模块或知识点的日常练习：逐题判分与解析、蓝图计时与超时告警、可中断续做（功能清单 F1-5/F1-6）。',
@@ -126,18 +130,16 @@ export const APP_ROUTES: AppRoute[] = [
     key: 'login',
     title: '登录',
     icon: LogIn,
-    kind: 'placeholder',
-    milestone: 'M1',
-    description: '账号体系（注册 / 登录 / JWT）尚未接入，练习数据将与账号绑定（功能清单 F1-4）。',
+    kind: 'login',
+    summary: '登录账号，练习记录与错题本随账号保存',
   },
   {
     path: '/register',
     key: 'register',
     title: '注册',
     icon: UserPlus,
-    kind: 'placeholder',
-    milestone: 'M1',
-    description: '账号体系（注册 / 登录 / JWT）尚未接入，练习数据将与账号绑定（功能清单 F1-4）。',
+    kind: 'register',
+    summary: '注册新账号，开始刷题',
   },
   {
     path: '/design',
