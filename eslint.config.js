@@ -2,7 +2,7 @@
  * ESLint flat config（工程规范 §3，T0-06 落地）
  * - 全仓 ts/tsx 走 typescript-eslint recommended（非 type-aware，无需 projectService）
  * - apps/web 额外启用 eslint-plugin-react-hooks recommended（含 compiler 系规则）
- * - 构建产物、依赖、覆盖率目录与本机工具目录（.zcode/.mimosa，均已在 .gitignore）一律忽略
+ * - 构建产物、依赖、覆盖率、导入管线产物（.import-out，含彩排中间产物与本机临时脚本）与本机工具目录（.zcode/.mimosa，均已在 .gitignore）一律忽略
  * 根 package.json 未声明 "type"：本文件按 CommonJS 加载
  */
 const tseslint = require('typescript-eslint')
@@ -15,6 +15,7 @@ module.exports = tseslint.config(
       '**/.wrangler/**',
       '**/node_modules/**',
       '**/coverage/**',
+      '.import-out/**',
       '.zcode/**',
       '.mimosa/**',
     ],
