@@ -1,6 +1,7 @@
 /**
  * 专项刷题·作答页（T1-08g，/practice/sessions/:id，requiresAuth + internal）
- * - 单题视图 + 顺序作答：顶部返回 /practice + 模块名 + 进度条（mono 计数）+ 会话状态 Tag；
+ * - 单题视图 + 顺序作答：顶部返回 /practice + 会话名（sessionDisplayName：module 会话显模块名，
+ *   wrong_redo 错题重做会话显「错题重做」，T1-10b）+ 进度条（mono 计数）+ 会话状态 Tag；
  *   当前题 QuestionCard；底部 上一题/下一题（已答可回看，边界禁用）
  * - 作答流：选项选中 →「提交答案」（未选禁用）→ useMutation 判分 → QuestionCard graded
  *   （correctKey=响应 correctAnswer、analysis=RichContentRenderer 解析、判分后自动展开）；
@@ -64,7 +65,7 @@ import {
   Tag,
 } from '../../components'
 import type { TagTone } from '../../components'
-import { moduleDisplayName } from './modules'
+import { sessionDisplayName } from './modules'
 import { practiceQueryKeys } from './practice-query-keys'
 import { useQuestionCountdown } from './use-question-countdown'
 import './session.css'
@@ -409,7 +410,7 @@ function SessionView({ sessionId }: { sessionId: number }) {
   const progressPercent =
     sessionDetail.total > 0 ? Math.round((answeredCount / sessionDetail.total) * 100) : 0
   const status = statusTag(sessionDetail.status)
-  const moduleName = moduleDisplayName(sessionDetail.moduleCode)
+  const moduleName = sessionDisplayName(sessionDetail.mode, sessionDetail.moduleCode)
 
   // 倒计时展示态：临尾阈值 = min(10s, 时限/4)（取更小者）；≤0 为超时态（服务端 isTimeout 为
   // durationMs 严格大于时限，等于不算——显示侧按任务口径 ≤0 即转超时，两者最多差一个 tick）

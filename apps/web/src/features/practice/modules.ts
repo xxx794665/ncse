@@ -2,11 +2,12 @@
  * 行测六模块展示元数据（T1-08f，模块选择页数据源）
  * - code 与 @ncse/shared 的 XingceModuleCode 一一对应，数组顺序即页面展示顺序
  * - 中文显示名 / 图标 / 简介为页面侧展示映射：shared 暂无显示名契约，未来跨端复用时再上移
+ * - sessionDisplayName（T1-10b）：会话显示名单一入口（wrong_redo 会话无 moduleCode，显「错题重做」）
  */
 
 import type { LucideIcon } from 'lucide-react'
 import { Brain, Calculator, ChartPie, Landmark, Lightbulb, MessagesSquare } from 'lucide-react'
-import type { XingceModuleCode } from '@ncse/shared'
+import type { PracticeMode, XingceModuleCode } from '@ncse/shared'
 
 /** 模块 code → 中文显示名（六模块全量；显示名的单一权威来源） */
 export const XINGCE_MODULE_NAMES: Record<XingceModuleCode, string> = {
@@ -72,4 +73,9 @@ export const XINGCE_MODULES: readonly XingceModuleMeta[] = [
 /** 会话卡片按 moduleCode 反查显示名；mode 非 module / 历史数据缺省时给兜底文案 */
 export function moduleDisplayName(code: XingceModuleCode | null): string {
   return code === null ? '专项练习' : XINGCE_MODULE_NAMES[code]
+}
+
+/** 会话显示名（T1-10b）：wrong_redo 会话 moduleCode 为 null，按 mode 显「错题重做」；其余按模块反查 */
+export function sessionDisplayName(mode: PracticeMode, moduleCode: XingceModuleCode | null): string {
+  return mode === 'wrong_redo' ? '错题重做' : moduleDisplayName(moduleCode)
 }

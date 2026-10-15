@@ -14,8 +14,11 @@ import type {
 import { apiFetch } from './client'
 
 /**
- * POST /api/practice/sessions：按模块建练习会话
- * 201 返回会话详情（模块可用题目不足 count 时按实际数建会话；为 0 时 400）
+ * POST /api/practice/sessions：建练习会话（CreatePracticeSessionRequest 为判别联合，按 mode 分支）
+ * - module 分支（mode 省缺视同）：按模块抽题；模块可用题目不足 count 时按实际数建会话，为 0 时 400
+ * - wrong_redo 分支（T1-10a）：{ mode:'wrong_redo', source:'active'|'hard', count? } 按错题本/难点本
+ *   在册条目重做（题目序 = wrong_book.updatedAt 倒序）；在册 0 条时 400「错题本/难点本暂无可重做的题目」
+ * 201 返回会话详情
  */
 export function createPracticeSessionApi(
   body: CreatePracticeSessionRequest,

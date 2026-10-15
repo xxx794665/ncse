@@ -1,6 +1,7 @@
 /**
  * 专项刷题·模块选择页（T1-08f，/practice，requiresAuth）
- * - 进行中会话：useQuery 拉取 in_progress 列表（createdAt 倒序即接口序），卡片「续做」→ /practice/sessions/:id
+ * - 进行中会话：useQuery 拉取 in_progress 列表（createdAt 倒序即接口序），卡片「续做」→ /practice/sessions/:id；
+ *   会话名经 sessionDisplayName（module 会话显模块名，wrong_redo 错题重做会话显「错题重做」，T1-10b）
  * - 六模块入口：点模块卡弹 Modal 选题数（5/10/20/30 默认 10），useMutation 建会话成功跳作答页（T1-08g 落地）
  * - 三态反馈：列表 pending 骨架（§6.8）/ error 提示 + 重试 / 空态引导；建会话 400 展示 ApiError.message；
  *   401 由 api client 全局回调接管（本页不特判）
@@ -15,7 +16,7 @@ import type { PracticeSessionSummary } from '@ncse/shared'
 import { ApiError, createPracticeSessionApi, fetchPracticeSessionsApi } from '../../api'
 import { Button, Card, Modal, Tag } from '../../components'
 import type { XingceModuleMeta } from './modules'
-import { XINGCE_MODULES, moduleDisplayName } from './modules'
+import { XINGCE_MODULES, sessionDisplayName } from './modules'
 import { practiceQueryKeys } from './practice-query-keys'
 import './practice.css'
 
@@ -48,7 +49,7 @@ function createErrorMessage(error: unknown): string {
 /** 进行中会话卡片：模块名 + 作答进度条 + 创建时间 + 续做入口 */
 function SessionCard({ session }: { session: PracticeSessionSummary }) {
   const navigate = useNavigate()
-  const moduleName = moduleDisplayName(session.moduleCode)
+  const moduleName = sessionDisplayName(session.mode, session.moduleCode)
   const percent =
     session.total > 0 ? Math.round((session.answeredCount / session.total) * 100) : 0
   const resume = () => navigate(`/practice/sessions/${String(session.id)}`)

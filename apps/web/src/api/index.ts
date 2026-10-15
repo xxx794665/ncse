@@ -9,4 +9,5 @@ export {
   fetchPracticeSessionsApi,
   submitPracticeAnswerApi,
 } from './practice-api'
-export { disposeWrongBookApi } from './wrong-book-api'
+export { disposeWrongBookApi, fetchWrongBookApi } from './wrong-book-api'
+export { addFavoriteApi, fetchFavoritesApi, removeFavoriteApi } from './favorites-api'

@@ -21,7 +21,7 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；placeholder=未实现功能占位 */
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；review=错题/难点/收藏三视图实页（T1-10b）；placeholder=未实现功能占位 */
 export type AppRouteKind =
   | 'home'
   | 'design'
@@ -29,6 +29,7 @@ export type AppRouteKind =
   | 'register'
   | 'practice'
   | 'practice-session'
+  | 'review'
   | 'placeholder'
 
 export interface AppRoute {
@@ -44,7 +45,7 @@ export interface AppRoute {
   requiresAuth?: boolean
   /** 内部路由（T1-08f）：不进首页速记入口（如作答页等二级页，仅经页内导航到达） */
   internal?: boolean
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session）不设 */
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session/review）不设 */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -91,13 +92,11 @@ export const APP_ROUTES: AppRoute[] = [
   {
     path: '/review',
     key: 'review',
-    title: '错题 · 收藏 · 需加强',
+    title: '错题 · 难点 · 收藏',
     icon: CircleX,
-    kind: 'placeholder',
-    milestone: 'M1',
-    description:
-      '错题重做与消灭、收藏练习与需加强清单的统一复习入口；错题本（F1-7）与收藏（F1-8）随 M1 交付，需加强清单（F3-4）M3 完整落地，错题/超时数据自 M1 起自动汇入（功能清单 F1-7/F1-8/F3-4）。',
-    summary: '错题重做、收藏练习、需加强清单',
+    kind: 'review',
+    requiresAuth: true,
+    summary: '错题重做、难点跟进与收藏清单',
   },
   {
     path: '/stats',
