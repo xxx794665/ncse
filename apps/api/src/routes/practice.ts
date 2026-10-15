@@ -8,7 +8,6 @@ import {
   IMAGE_KEY_PATTERN,
 } from '@ncse/shared'
 import type {
-  CreatePracticeSessionRequest,
   PracticeQuestionDto,
   PracticeSessionDetail,
   PracticeSessionStatus,
@@ -18,6 +17,7 @@ import type {
   RichContent,
   SubmitPracticeAnswerResponse,
   WrongBookContext,
+  WrongBookRedoSource,
   XingceModuleCode,
 } from '@ncse/shared'
 import { createDb, type DbClient } from '../db'
@@ -26,8 +26,11 @@ import { requireAuth } from '../auth/middleware'
 import type { AppEnv } from '../types'
 
 /**
- * 专项刷题·练习会话域路由（T1-08b/08c，挂载于 /api/practice，见 src/routes/api.ts）：
- * - POST /sessions：按模块建会话（抽题：未做过优先、不足按最近作答最旧补齐），201 返回会话详情；
+ * 专项刷题·练习会话域路由（T1-08b/08c/10a，挂载于 /api/practice，见 src/routes/api.ts）：
+ * - POST /sessions：建会话（判别联合，mode 省缺 = 'module' 向后兼容）——
+ *   module 分支按模块抽题（未做过优先、不足按最近作答最旧补齐）；
+ *   wrong_redo 分支按错题本/难点本在册条目建重做会话（T1-10a：题目序 = updatedAt 倒序，
+ *   最近变化在前；moduleCode null → 判分不判超时）；201 返回会话详情；
  * - GET /sessions/:id：会话详情（题目富片段不含答案/解析——服务端判分共识；图片段投影 /api/img URL）；
  * - GET /sessions：当前用户活动会话列表（只列 in_progress，createdAt 倒序）；
  * - POST /sessions/:id/answers：判分（practice_records append-only 落库 + 错题本状态机 ADR-0010
@@ -71,21 +74,53 @@ function isXingceModuleCode(value: string): value is XingceModuleCode {
   return (XINGCE_MODULE_CODES as readonly string[]).includes(value)
 }
 
-/** 建会话入参校验：module 六选一、count（如传）四选一；不合法抛 400（返回值 count 已定缺省） */
-function parseCreateRequest(body: unknown): Required<CreatePracticeSessionRequest> {
+/**
+ * 建会话入参的解析结果（判别联合，与 shared CreatePracticeSessionRequest 两分支同构；
+ * count 已定缺省）。module 分支省缺 mode 的旧形状与显式 mode='module' 均归入 module 分支。
+ */
+type ParsedCreateRequest =
+  | { mode: 'module'; module: XingceModuleCode; count: number }
+  | { mode: 'wrong_redo'; source: WrongBookRedoSource; count: number }
+
+/** wrong_redo 分支的 source 白名单（与 shared WrongBookRedoSource 对齐，两端勿单方扩值） */
+const REDO_SOURCES: readonly WrongBookRedoSource[] = ['active', 'hard']
+
+/** source 值收窄：是否为两个重做来源之一 */
+function isRedoSource(value: string): value is WrongBookRedoSource {
+  return (REDO_SOURCES as readonly string[]).includes(value)
+}
+
+/** 解析建会话入参：mode 收敛（省缺 = 'module'）、分支字段与 count 校验；不合法抛 400 */
+function parseCreateRequest(body: unknown): ParsedCreateRequest {
   if (typeof body !== 'object' || body === null) {
     throw new HTTPException(400, { message: '请求体须为 JSON 对象，且含 module 字符串字段' })
   }
-  const { module, count } = body as Record<string, unknown>
-  if (typeof module !== 'string' || !isXingceModuleCode(module)) {
-    throw new HTTPException(400, { message: `module 必须是行测六模块编码之一（${XINGCE_MODULE_CODES.join('/')}）` })
+  const { mode, module, source, count } = body as Record<string, unknown>
+
+  // mode 省缺 = 'module'（向后兼容：既有 web 调用与全部既有测试不传 mode）；非法值拒绝
+  if (mode !== undefined && mode !== 'module' && mode !== 'wrong_redo') {
+    throw new HTTPException(400, { message: 'mode 必须是 module 或 wrong_redo（字符串；省缺视同 module）' })
   }
+
   if (count !== undefined) {
     if (typeof count !== 'number' || !ALLOWED_QUESTION_COUNTS.includes(count)) {
       throw new HTTPException(400, { message: `count 必须是 ${ALLOWED_QUESTION_COUNTS.join('/')} 之一` })
     }
   }
-  return { module, count: count ?? DEFAULT_QUESTION_COUNT }
+  const questionCount = count ?? DEFAULT_QUESTION_COUNT
+
+  if (mode === 'wrong_redo') {
+    if (typeof source !== 'string' || !isRedoSource(source)) {
+      throw new HTTPException(400, { message: `source 必须是 ${REDO_SOURCES.join(' 或 ')}（字符串）` })
+    }
+    return { mode: 'wrong_redo', source, count: questionCount }
+  }
+
+  // module 分支（mode 省缺或显式 'module'）
+  if (typeof module !== 'string' || !isXingceModuleCode(module)) {
+    throw new HTTPException(400, { message: `module 必须是行测六模块编码之一（${XINGCE_MODULE_CODES.join('/')}）` })
+  }
+  return { mode: 'module', module, count: questionCount }
 }
 
 /**
@@ -331,27 +366,69 @@ export const practiceRoute = new Hono<AppEnv>()
 // 本域无公开端点：三端点一律经 requireAuth（401 由组合根收敛为 unauthorized 信封）
 practiceRoute.use(requireAuth)
 
+/**
+ * 错题重做抽题（T1-10a）：当前用户 wrong_book 中 status=source 的在册条目，
+ * 取 updatedAt 倒序、id 倒序并列稳定的前 count 个 questionId——题目序 = 该序（最近变化在前）；
+ * user+question 唯一保证清单无重复。eliminated 软移除条目不进 source 白名单，天然排除。
+ */
+async function selectWrongRedoQuestionIds(
+  db: DbClient,
+  userId: number,
+  source: WrongBookRedoSource,
+  count: number,
+): Promise<number[]> {
+  const rows = await db
+    .select({ questionId: wrongBook.questionId })
+    .from(wrongBook)
+    .where(and(eq(wrongBook.userId, userId), eq(wrongBook.status, source)))
+    .orderBy(desc(wrongBook.updatedAt), desc(wrongBook.id))
+    .limit(count)
+  return rows.map((row) => row.questionId)
+}
+
 practiceRoute.post('/sessions', async (c) => {
   const request = parseCreateRequest(await readJsonBody(c))
   const authUser = c.get('authUser')
   const db = createDb(c.env)
 
-  // 模块解析：moduleCode 为稳定自然键（ADR-0009：会话表故意不设外键），按 code 查 modules 行
-  const moduleRows = await db.select({ id: modules.id }).from(modules).where(eq(modules.code, request.module))
-  const moduleIds = moduleRows.map((row) => row.id)
-  if (moduleIds.length === 0) {
-    throw new HTTPException(400, { message: `模块 ${request.module} 暂无题目` })
+  /** 会话模式与模块编码（两分支唯一差异；wrong_redo 恒 moduleCode null → 判分不判超时） */
+  let mode: 'module' | 'wrong_redo'
+  let moduleCode: XingceModuleCode | null
+  /** 会话题目清单（序 = 抽取序：module 为未做过优先，wrong_redo 为 updatedAt 倒序） */
+  let questionIds: number[]
+
+  if (request.mode === 'wrong_redo') {
+    mode = 'wrong_redo'
+    moduleCode = null
+    questionIds = await selectWrongRedoQuestionIds(db, authUser.id, request.source, request.count)
+    if (questionIds.length === 0) {
+      throw new HTTPException(400, {
+        message: request.source === 'active' ? '错题本暂无可重做的题目' : '难点本暂无可重做的题目',
+      })
+    }
+    // 在册条目不足 count 时按实际条数建会话（同模块流惯例，不报错）
+  } else {
+    mode = 'module'
+    moduleCode = request.module
+
+    // 模块解析：moduleCode 为稳定自然键（ADR-0009：会话表故意不设外键），按 code 查 modules 行
+    const moduleRows = await db.select({ id: modules.id }).from(modules).where(eq(modules.code, request.module))
+    const moduleIds = moduleRows.map((row) => row.id)
+    if (moduleIds.length === 0) {
+      throw new HTTPException(400, { message: `模块 ${request.module} 暂无题目` })
+    }
+
+    // 抽题：模块可用题目为 0（未做过与做过均无）→ 400；不足 count 时按实际数建会话（不报错）
+    questionIds = await selectQuestionIds(db, authUser.id, moduleIds, request.count)
+    if (questionIds.length === 0) {
+      throw new HTTPException(400, { message: `模块 ${request.module} 暂无题目` })
+    }
   }
 
-  // 抽题：模块可用题目为 0（未做过与做过均无）→ 400；不足 count 时按实际数建会话（不报错）
-  const questionIds = await selectQuestionIds(db, authUser.id, moduleIds, request.count)
-  if (questionIds.length === 0) {
-    throw new HTTPException(400, { message: `模块 ${request.module} 暂无题目` })
-  }
-
+  // 建会话行（两分支共用既有 insert 路径：mode/moduleCode/questionIds 投影与详情/列表 DTO 不需改）
   const inserted = await db
     .insert(practiceSessions)
-    .values({ userId: authUser.id, mode: 'module', moduleCode: request.module, questionIds })
+    .values({ userId: authUser.id, mode, moduleCode, questionIds })
     .returning({ id: practiceSessions.id, status: practiceSessions.status })
   const session = inserted[0]
 
@@ -359,8 +436,8 @@ practiceRoute.post('/sessions', async (c) => {
   const questionRows = await fetchQuestionRows(db, questionIds)
   const body: PracticeSessionDetail = {
     id: session.id,
-    mode: 'module',
-    moduleCode: request.module,
+    mode,
+    moduleCode,
     status: session.status,
     total: questionIds.length,
     answeredCount: 0,

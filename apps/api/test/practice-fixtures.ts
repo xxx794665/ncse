@@ -4,6 +4,7 @@ import type { QuestionOption, RichContent, WrongBookStatus, XingceModuleCode } f
 import { createDb, type DbClient } from '../src/db'
 import {
   examTypes,
+  favorites,
   modules,
   practiceRecords,
   practiceSessions,
@@ -14,7 +15,7 @@ import {
 } from '../src/db/schema'
 
 /**
- * 练习域集成测试共享夹具（T1-08b 起从 practice-api.test.ts 抽出，判分/错题处置测试共用）：
+ * 练习域集成测试共享夹具（T1-08b 起从 practice-api.test.ts 抽出，判分/错题处置/错题列表/收藏/重做会话测试共用）：
  * db 客户端经 env.DB 直连（与被测 worker 路由同一 D1 绑定，直插前置态/直查落库断言；
  * vitest isolatedStorage 按测试文件隔离存储，各文件 beforeEach 清库互不串扰）。
  * 内容夹具全虚构：civil_service/xingce 链下 political_theory 12 题 + common_sense 2 题
@@ -198,7 +199,7 @@ export async function userIdOf(username: string): Promise<number> {
   return id
 }
 
-/* ---------- 错题本夹具（T1-08c 判分状态机与处置端点） ---------- */
+/* ---------- 错题本夹具（T1-08c 判分状态机与处置端点；T1-10a 列表/重做会话） ---------- */
 
 /** 直插错题本条目覆盖项（缺省为「答错一次后」的形状：active、wrongCount=1、其余 0） */
 export interface WrongBookOverrides {
@@ -206,12 +207,14 @@ export interface WrongBookOverrides {
   wrongCount?: number
   redoCount?: number
   consecutiveCorrect?: number
+  /** 最近变化时间（缺省库端 now；列表排序与重做抽题序用例需钉死可控值） */
+  updatedAt?: string
 }
 
 /** wrong_book 行（直查断言用，列类型由 schema 推导） */
 export type WrongBookRow = typeof wrongBook.$inferSelect
 
-/** 直插一条错题本条目（判分状态机/处置端点的前置态），返回 wrong_book.id */
+/** 直插一条错题本条目（判分状态机/处置端点/列表/重做会话的前置态），返回 wrong_book.id */
 export async function insertWrongBookEntry(
   userId: number,
   questionId: number,
@@ -226,6 +229,7 @@ export async function insertWrongBookEntry(
       wrongCount: overrides.wrongCount ?? 1,
       redoCount: overrides.redoCount ?? 0,
       consecutiveCorrect: overrides.consecutiveCorrect ?? 0,
+      ...(overrides.updatedAt === undefined ? {} : { updatedAt: overrides.updatedAt }),
     })
     .returning({ id: wrongBook.id })
   const id = rows.at(0)?.id
@@ -240,4 +244,33 @@ export async function wrongBookRowOf(userId: number, questionId: number): Promis
     .from(wrongBook)
     .where(and(eq(wrongBook.userId, userId), eq(wrongBook.questionId, questionId)))
   return rows.at(0)
+}
+
+/* ---------- 收藏夹具（T1-10a 收藏端点） ---------- */
+
+/** 直插一条收藏覆盖项（缺省 createdAt 见 insertFavorite 签名） */
+export interface FavoriteOverrides {
+  /** 收藏时间（缺省库端 now；列表排序用例需钉死可控值） */
+  createdAt?: string
+}
+
+/** 直插一条收藏（收藏列表排序/悬空/隔离夹具用），返回 favorites.id */
+export async function insertFavorite(
+  userId: number,
+  questionId: number,
+  overrides: FavoriteOverrides = {},
+): Promise<number> {
+  const rows = await db
+    .insert(favorites)
+    .values({ userId, questionId, ...(overrides.createdAt === undefined ? {} : { createdAt: overrides.createdAt }) })
+    .returning({ id: favorites.id })
+  const id = rows.at(0)?.id
+  if (id === undefined) throw new Error('favorites 插入未返回 id')
+  return id
+}
+
+/** 直查收藏行数（幂等收藏/取消的落库断言用：按用户计数即可覆盖唯一约束语义） */
+export async function favoriteCountOf(userId: number): Promise<number> {
+  const rows = await db.select({ id: favorites.id }).from(favorites).where(eq(favorites.userId, userId))
+  return rows.length
 }

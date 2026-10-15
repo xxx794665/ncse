@@ -2,7 +2,7 @@
  * @ncse/shared — 前后端共用类型与常量。
  * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
  * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）、
- * 判分与错题本 DTO（T1-08c）；
+ * 判分与错题本 DTO（T1-08c）、错题本/难点本列表与收藏 DTO 及建会话 wrong_redo 模式（T1-10a）；
  * 后续将承载：其余业务 DTO 等。
  */
 
@@ -151,16 +151,30 @@ export interface MeResponse {
 /* ============ 练习会话 DTO（T1-08b 定稿，前端 T1-08f 直接复用） ============ */
 
 /**
- * POST /api/practice/sessions 请求体。
- * count 取值 5/10/20/30（与前端模块选择页的题数选项一致，勿单方扩值），缺省 10；
- * 模块可用题目不足 count 时按实际数建会话（不报错），为 0 时 400。
+ * POST /api/practice/sessions 请求体（判别联合，按 mode 分支，T1-10a 扩展）：
+ * - module 分支：按行测模块抽题（mode 省缺视同 'module'——既有 web 调用与 M1 前端不传 mode，
+ *   向后兼容零改动）；
+ * - wrong_redo 分支：按错题本/难点本在册条目重做（题目序 = wrong_book.updatedAt 倒序）。
+ * 两分支 count 取值 5/10/20/30（与前端模块选择页的题数选项一致，勿单方扩值），缺省 10；
+ * 题目不足 count 时按实际数建会话（不报错），为 0 时 400。
  */
-export interface CreatePracticeSessionRequest {
-  /** 行测模块编码（六模块之一，非法值 400） */
-  module: XingceModuleCode
-  /** 题目数量（5/10/20/30，缺省 10） */
-  count?: number
-}
+export type CreatePracticeSessionRequest =
+  | {
+      /** 练习模式（省缺视同 'module'，向后兼容；显式传 'module' 等价） */
+      mode?: 'module'
+      /** 行测模块编码（六模块之一，非法值 400；module 分支必填） */
+      module: XingceModuleCode
+      /** 题目数量（5/10/20/30，缺省 10） */
+      count?: number
+    }
+  | {
+      /** 错题重做模式（T1-10a） */
+      mode: 'wrong_redo'
+      /** 重做来源：'active' 错题本 / 'hard' 难点本（非法值 400） */
+      source: WrongBookRedoSource
+      /** 题目数量（5/10/20/30，缺省 10） */
+      count?: number
+    }
 
 /**
  * 续做回显的已答题目信息：读 practice_records 中该会话该题最近一条
@@ -307,6 +321,63 @@ export interface WrongBookDisposeResponse {
   redoCount: number
   /** 重做连续答对次数（处置不变更；仅供后续分析，ADR-0010） */
   consecutiveCorrect: number
+}
+
+/* ============ 错题本/难点本列表与收藏 DTO（T1-10a 定稿，前端 T1-10b 直接复用） ============ */
+
+/** 错题重做会话的来源（CreatePracticeSessionRequest 的 wrong_redo 分支）：错题本 / 难点本 */
+export type WrongBookRedoSource = 'active' | 'hard'
+
+/**
+ * GET /api/wrong-book?status=active|hard 列表项（错题本/难点本，T1-10a）。
+ * status 缺省 'active'，仅容 'active'|'hard'；eliminated 软移除条目永不列出（ADR-0010）。
+ * 排序 updatedAt 倒序（最近变化在前），id 倒序并列稳定。
+ */
+export interface WrongBookEntrySummary {
+  /** 题目 id（questions 表主键） */
+  questionId: number
+  /** 行测模块编码（题目当前所属模块；悬空题行整条跳过，故恒非空） */
+  moduleCode: XingceModuleCode
+  /**
+   * 题干预览（服务端生成）：stem 的 text 段以空格连接，超 80 字符截断加「…」；
+   * 无 text 段（纯图题）为「（图片题）」。
+   */
+  stemPreview: string
+  /** 累计答错次数 */
+  wrongCount: number
+  /** 累计重做次数 */
+  redoCount: number
+  /** 条目状态（列表恒为查询指定的 active 或 hard） */
+  status: WrongBookStatus
+  /** 最近变化时间（ISO-8601 UTC，作答/处置均刷新） */
+  updatedAt: string
+}
+
+/**
+ * GET /api/favorites 列表项（收藏夹，T1-10a）。
+ * 取消收藏即删行（schema 设计），列表只反映在册行；排序 createdAt 倒序（最近收藏在前），id 倒序并列稳定。
+ */
+export interface FavoriteSummary {
+  /** 题目 id（questions 表主键） */
+  questionId: number
+  /** 行测模块编码（题目当前所属模块；悬空题行整条跳过，故恒非空） */
+  moduleCode: XingceModuleCode
+  /** 题干预览（生成规则同 WrongBookEntrySummary.stemPreview，两端共用后端同一实现） */
+  stemPreview: string
+  /** 收藏时间（ISO-8601 UTC） */
+  favoritedAt: string
+}
+
+/**
+ * POST /api/favorites/:questionId 与 DELETE /api/favorites/:questionId 响应体（T1-10a）。
+ * 幂等：重复收藏（onConflictDoNothing）与取消不存在的收藏均恒 200，
+ * 语义为「操作后该题是否在当前用户收藏」（POST 恒 true、DELETE 恒 false）。
+ */
+export interface FavoriteToggleResponse {
+  /** 题目 id（回显路径参数） */
+  questionId: number
+  /** 操作后是否在收藏（POST 恒 true、DELETE 恒 false） */
+  favorited: boolean
 }
 
 export * from './blueprint.js'
