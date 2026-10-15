@@ -69,6 +69,22 @@ export const XINGCE_BLUEPRINTS: readonly ExamBlueprint[] = [
   },
 ]
 
+/**
+ * 默认蓝图编码：省考联考·标准卷。服务端判分（isTimeout，T1-08c）与前端每题倒计时（T1-09）
+ * 共用同一默认卷锚点——单一来源防两端各写一份字面量后漂移；蓝图选择器属后续扩展点
+ * （会话表加列 / 请求携带），落地前两端固定按默认卷推导。
+ */
+export const DEFAULT_BLUEPRINT_CODE = 'province_joint_std'
+
+/** 默认蓝图条目；目录缺该 code 属代码级配置错误（同仓演进，fail fast） */
+export const DEFAULT_BLUEPRINT: ExamBlueprint = (() => {
+  const blueprint = XINGCE_BLUEPRINTS.find((item) => item.code === DEFAULT_BLUEPRINT_CODE)
+  if (blueprint === undefined) {
+    throw new Error(`shared 蓝图目录缺少 code=${DEFAULT_BLUEPRINT_CODE} 的条目`)
+  }
+  return blueprint
+})()
+
 /** 整卷总时长（分钟）＝ 模块明细时限汇总。blueprints 表不设总时长列，调用方须以本推导为准（T1-07）。 */
 export function deriveTotalMinutes(blueprint: ExamBlueprint): number {
   return blueprint.modules.reduce((sum, plan) => sum + plan.timeLimitMinutes, 0)

@@ -3,9 +3,9 @@ import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { and, asc, countDistinct, desc, eq, inArray, notExists, sql } from 'drizzle-orm'
 import {
+  DEFAULT_BLUEPRINT,
   deriveQuestionTimeLimit,
   IMAGE_KEY_PATTERN,
-  XINGCE_BLUEPRINTS,
 } from '@ncse/shared'
 import type {
   CreatePracticeSessionRequest,
@@ -53,18 +53,6 @@ const DEFAULT_QUESTION_COUNT = 10
 
 /** 会话 404 文案：不存在与不属于当前用户同一句（防存在性探测） */
 const SESSION_NOT_FOUND_MESSAGE = '会话不存在'
-
-/**
- * 判分超时推导的默认蓝图：省考联考·标准卷。蓝图选择器属前端交互，会话表未存蓝图 code，
- * 扩展点留给后续任务（会话表加列 / 请求携带），当前判分固定按标准卷推导每题时限。
- */
-const DEFAULT_BLUEPRINT_CODE = 'province_joint_std'
-
-/** 标准卷蓝图条目；shared 目录缺该 code 属代码级配置错误（同仓演进，fail fast） */
-const DEFAULT_BLUEPRINT = XINGCE_BLUEPRINTS.find((blueprint) => blueprint.code === DEFAULT_BLUEPRINT_CODE)
-if (DEFAULT_BLUEPRINT === undefined) {
-  throw new Error(`shared 蓝图目录缺少 code=${DEFAULT_BLUEPRINT_CODE} 的条目`)
-}
 
 /** durationMs 合法上限（毫秒）：24 小时，防把时间戳等荒谬值当用时落库 */
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000

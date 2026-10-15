@@ -11,6 +11,10 @@
  * - 续做回显：answered 非 null 直接 graded；isCorrect true 时 correctKey=answered.answer，
  *   false 时 correctKey=undefined（正确项与解析未随 detail 下发，所选显误选态，不伪造数据——已知边界）
  * - durationMs：每题「首次成为当前题」打激活时间戳（导航往返不重置），提交时取差值钳 [0, 86400000)
+ * - 每题倒计时（T1-09）：未判分当前题在进度条行尾显示 mm:ss（复用 activatedAt 同一份打点，
+ *   墙钟重算不累计、挂后台不暂停、切回续扣；时限锚 shared 默认蓝图，与服务端 isTimeout 同锚）；
+ *   临尾 min(10s, 时限/4) 转 warning，超时转 danger「已超时 +m:ss」+ role="alert" 播报一次
+ *   （F1-6：不自动跳题、不阻断提交）；已判分/会话完成/模块无时限时不显示也不跑表
  * - 错题处置（ADR-0010）：判分响应 wrongBook 非 null 且 status==='active' 且答对 → 处置弹窗
  *   （移除 / 归难点本 / 保持）；处置失败弹窗内提示可重试，成功轻提示条
  * - 完成态：status==='finished' 或全部已答 → 顶部完成小结（已答/答对/正确率/超时 + 返回模块选择），
@@ -42,6 +46,7 @@ import type {
   SubmitPracticeAnswerResponse,
   WrongBookDisposeAction,
 } from '@ncse/shared'
+import { DEFAULT_BLUEPRINT, deriveQuestionTimeLimit } from '@ncse/shared'
 import {
   ApiError,
   disposeWrongBookApi,
@@ -61,6 +66,7 @@ import {
 import type { TagTone } from '../../components'
 import { moduleDisplayName } from './modules'
 import { practiceQueryKeys } from './practice-query-keys'
+import { useQuestionCountdown } from './use-question-countdown'
 import './session.css'
 
 /** durationMs 上界（shared SubmitPracticeAnswerRequest 契约：[0, 86400000) 整数毫秒） */
@@ -103,6 +109,13 @@ function statusTag(status: PracticeSessionStatus): { tone: TagTone; label: strin
   if (status === 'finished') return { tone: 'success', label: '已完成' }
   if (status === 'abandoned') return { tone: 'muted', label: '已放弃' }
   return { tone: 'primary', label: '进行中' }
+}
+
+/** m:ss 单调计数（秒零填充，分钟不封顶上溢；倒计时剩余与超时累计共用） */
+function formatClock(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
 /** 合并单题视图（优先级见 QuestionView 注释） */
@@ -242,6 +255,23 @@ function SessionView({ sessionId }: { sessionId: number }) {
   const questions = detail?.questions ?? []
   const currentQuestion = currentIndex === null ? undefined : questions[currentIndex]
 
+  // 进度与完成态：本地判分记录 + detail 回显合并计数（提交后 invalidate 回流前 progress 即时正确）；
+  // 提前到早退分支前计算——倒计时 hook 的 running 门需要 finished
+  const answeredCount = questions.filter(
+    (question) => grades.has(question.id) || question.answered !== null,
+  ).length
+  const correctCount = questions.filter((question) => {
+    const grade = grades.get(question.id)
+    return (grade?.result.isCorrect ?? question.answered?.isCorrect) === true
+  }).length
+  const timeoutCount = questions.filter((question) => {
+    const grade = grades.get(question.id)
+    return (grade?.result.isTimeout ?? question.answered?.isTimeout) === true
+  }).length
+  const finished =
+    detail !== undefined &&
+    (detail.status === 'finished' || (detail.total > 0 && answeredCount >= detail.total))
+
   // 当前题首次激活打点（提交计时起点；effect 幂等，Map.has 守卫导航往返不重置）
   useEffect(() => {
     if (currentQuestion === undefined) return
@@ -249,6 +279,41 @@ function SessionView({ sessionId }: { sessionId: number }) {
       activatedAtRef.current.set(currentQuestion.id, Date.now())
     }
   }, [currentQuestion])
+
+  // 每题倒计时（T1-09）：时限锚 shared 默认蓝图（与服务端 isTimeout 同一推导，前端不写字面量卷型码）；
+  // moduleCode 为 null 或模块不在蓝图 → undefined，倒计时整块不渲染、不跑定时器
+  const questionTimeLimitSeconds =
+    detail === undefined || detail.moduleCode === null
+      ? undefined
+      : deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, detail.moduleCode)
+  // 判分态两来源与 buildQuestionView 同口径：本地判分记录 或 detail 续做回显
+  const currentGraded =
+    currentQuestion !== undefined &&
+    (currentQuestion.answered !== null || grades.has(currentQuestion.id))
+  const remainingMs = useQuestionCountdown({
+    questionId: currentQuestion?.id ?? null,
+    limitSeconds: questionTimeLimitSeconds,
+    running: !finished && !currentGraded,
+    activatedAt: activatedAtRef,
+  })
+
+  // 超时一次播报（渲染期守卫式写入，同 located 哨兵模式）：每题首次观察到超时定稿文案，
+  // 视觉隐藏 role="alert" 区内容变更即播；已播题（含切回）不重复，倒计时本身不挂 aria-live
+  const [timeoutAnnouncedIds, setTimeoutAnnouncedIds] = useState<ReadonlySet<number>>(new Set())
+  const [timeoutAlertText, setTimeoutAlertText] = useState<string | null>(null)
+  if (
+    remainingMs !== null &&
+    remainingMs <= 0 &&
+    currentQuestion !== undefined &&
+    currentIndex !== null &&
+    !timeoutAnnouncedIds.has(currentQuestion.id)
+  ) {
+    const announcedQuestionId = currentQuestion.id
+    setTimeoutAnnouncedIds((prev) => new Set(prev).add(announcedQuestionId))
+    setTimeoutAlertText(
+      `第 ${currentIndex + 1} 题已超出建议用时，仍可继续作答并提交，本次用时会如实记录。`,
+    )
+  }
 
   const disposeMutation = useMutation({
     mutationFn: (variables: { questionId: number; action: WrongBookDisposeAction }) =>
@@ -341,25 +406,30 @@ function SessionView({ sessionId }: { sessionId: number }) {
     selections.get(currentQuestion.id),
   )
 
-  // 进度与完成态：本地判分记录 + detail 回显合并计数（提交后 invalidate 回流前 progress 即时正确）
-  const answeredCount = questions.filter(
-    (question) => grades.has(question.id) || question.answered !== null,
-  ).length
-  const correctCount = questions.filter((question) => {
-    const grade = grades.get(question.id)
-    return (grade?.result.isCorrect ?? question.answered?.isCorrect) === true
-  }).length
-  const timeoutCount = questions.filter((question) => {
-    const grade = grades.get(question.id)
-    return (grade?.result.isTimeout ?? question.answered?.isTimeout) === true
-  }).length
-  const finished =
-    sessionDetail.status === 'finished' ||
-    (sessionDetail.total > 0 && answeredCount >= sessionDetail.total)
   const progressPercent =
     sessionDetail.total > 0 ? Math.round((answeredCount / sessionDetail.total) * 100) : 0
   const status = statusTag(sessionDetail.status)
   const moduleName = moduleDisplayName(sessionDetail.moduleCode)
+
+  // 倒计时展示态：临尾阈值 = min(10s, 时限/4)（取更小者）；≤0 为超时态（服务端 isTimeout 为
+  // durationMs 严格大于时限，等于不算——显示侧按任务口径 ≤0 即转超时，两者最多差一个 tick）
+  const countdownWarnThresholdMs =
+    questionTimeLimitSeconds === undefined
+      ? 0
+      : Math.min(10_000, (questionTimeLimitSeconds * 1000) / 4)
+  const countdownTone: TagTone =
+    remainingMs === null || remainingMs > countdownWarnThresholdMs
+      ? 'muted'
+      : remainingMs > 0
+        ? 'warning'
+        : 'danger'
+  // 剩余向上取整（10.x 秒显 0:10，归零转超时）；超时累计向下取整（+0:00 起步继续往上走）
+  const countdownText =
+    remainingMs === null
+      ? ''
+      : remainingMs > 0
+        ? formatClock(Math.ceil(remainingMs / 1000))
+        : `已超时 +${formatClock(Math.floor(-remainingMs / 1000))}`
 
   const busy = submitMutation.isPending
   const canGoPrev = currentIndex > 0 && !busy
@@ -437,7 +507,35 @@ function SessionView({ sessionId }: { sessionId: number }) {
         <span className="session-progress__text">
           已答 {answeredCount}/{sessionDetail.total}
         </span>
+        {/* 每题倒计时（T1-09）：仅未判分且有时限的当前题渲染；role="timer" 自带 live=off，逐秒变化不播报 */}
+        {remainingMs !== null && (
+          <Tag
+            tone={countdownTone}
+            icon={Timer}
+            className="session-timer"
+            role="timer"
+            aria-label={remainingMs > 0 ? '本题剩余时间' : '本题超时时长'}
+          >
+            <span className="session-timer__value">{countdownText}</span>
+          </Tag>
+        )}
       </div>
+
+      {/* 超时一次播报：视觉隐藏 assertive 区，每题首次超时写入一次（不逐秒重复、切回不重播） */}
+      <p className="session-sr-only" role="alert">
+        {timeoutAlertText ?? ''}
+      </p>
+
+      {/* 超时可见提示（F1-6：告警但不打断作答——不跳题、提交照常，用时如实上报由服务端判超时） */}
+      {remainingMs !== null && remainingMs <= 0 && (
+        <p className="session-timeout-note">
+          <Timer aria-hidden="true" />
+          <span>
+            本题已超出建议用时（每题 {formatClock(questionTimeLimitSeconds ?? 0)}），
+            可继续作答并提交，本次用时会如实记录。
+          </span>
+        </p>
+      )}
 
       {finished && (
         <SessionSummary
