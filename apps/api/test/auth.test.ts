@@ -5,6 +5,7 @@ import { env, exports } from 'cloudflare:workers'
 import { createDb } from '../src/db'
 import { users } from '../src/db/schema'
 import { verifyPassword } from '../src/auth/password'
+import { TEST_PASSWORD } from './api-helpers'
 import { TEST_JWT_SECRET } from './test-secret'
 
 /**
@@ -13,6 +14,11 @@ import { TEST_JWT_SECRET } from './test-secret'
  */
 
 const worker = exports.default
+
+/** 错误口令：运行期自 TEST_PASSWORD 派生（非可用字面量），与正确口令必然不同（2026-10-12 拦截约定存量清理） */
+const WRONG_PASSWORD = `${TEST_PASSWORD}-wrong`
+/** 另一口令（同名冲突/并发注册的第二次注册用）：同上运行期派生，与正确口令必然不同 */
+const ALT_PASSWORD = `${TEST_PASSWORD}-alt`
 
 interface JsonOutcome {
   status: number
@@ -63,7 +69,7 @@ beforeEach(async () => {
 
 describe('POST /api/auth/register', () => {
   it('注册成功：201，返回三段式 JWT token 与 user 视图', async () => {
-    const { status, body } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: 'password123' }))
+    const { status, body } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: TEST_PASSWORD }))
 
     expect(status).toBe(201)
     const token = stringField(body, 'token')
@@ -72,21 +78,21 @@ describe('POST /api/auth/register', () => {
   })
 
   it('数据库只存 pbkdf2 自描述哈希，绝不存明文，且可正确校验', async () => {
-    await requestJson('/api/auth/register', postJson({ username: 'alice', password: 'password123' }))
+    await requestJson('/api/auth/register', postJson({ username: 'alice', password: TEST_PASSWORD }))
 
     const rows = await createDb(env).select().from(users).where(eq(users.username, 'alice'))
     const stored = rows.at(0)?.passwordHash
     expect(stored).toBeDefined()
     // pbkdf2$<100000>$<16字节盐的Base64，24字符带==填充>$<32字节键的Base64，44字符带=填充>
     expect(stored).toMatch(/^pbkdf2\$100000\$[A-Za-z0-9+/]{22}==\$[A-Za-z0-9+/]{43}=$/)
-    expect(stored).not.toBe('password123')
-    expect(await verifyPassword('password123', stored ?? '')).toBe(true)
-    expect(await verifyPassword('password124', stored ?? '')).toBe(false)
+    expect(stored).not.toBe(TEST_PASSWORD)
+    expect(await verifyPassword(TEST_PASSWORD, stored ?? '')).toBe(true)
+    expect(await verifyPassword(WRONG_PASSWORD, stored ?? '')).toBe(false)
   })
 
   it('重复用户名：409 + conflict 错误信封', async () => {
-    await requestJson('/api/auth/register', postJson({ username: 'alice', password: 'password123' }))
-    const { status, body } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: 'password456' }))
+    await requestJson('/api/auth/register', postJson({ username: 'alice', password: TEST_PASSWORD }))
+    const { status, body } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: ALT_PASSWORD }))
 
     expect(status).toBe(409)
     const error = errorField(body)
@@ -96,16 +102,16 @@ describe('POST /api/auth/register', () => {
 
   it('并发注册同名：恰一个 201、一个 409（唯一索引兜底而非先查后插）', async () => {
     const outcomes = await Promise.all([
-      requestJson('/api/auth/register', postJson({ username: 'bob', password: 'password123' })),
-      requestJson('/api/auth/register', postJson({ username: 'bob', password: 'password456' })),
+      requestJson('/api/auth/register', postJson({ username: 'bob', password: TEST_PASSWORD })),
+      requestJson('/api/auth/register', postJson({ username: 'bob', password: ALT_PASSWORD })),
     ])
     expect(outcomes.map((o) => o.status).sort()).toEqual([201, 409])
   })
 
   it.each([
-    { case: '过短', username: 'ab', password: 'password123' },
-    { case: '非法字符', username: 'bad name!', password: 'password123' },
-    { case: '超长', username: 'a'.repeat(33), password: 'password123' },
+    { case: '过短', username: 'ab', password: TEST_PASSWORD },
+    { case: '非法字符', username: 'bad name!', password: TEST_PASSWORD },
+    { case: '超长', username: 'a'.repeat(33), password: TEST_PASSWORD },
     { case: '弱密码', username: 'alice', password: 'short' },
   ])('入参不合法（$case）：400 + bad_request', async ({ username, password }) => {
     const { status, body } = await requestJson('/api/auth/register', postJson({ username, password }))
@@ -115,7 +121,7 @@ describe('POST /api/auth/register', () => {
 
   it.each([
     { case: '请求体不是 JSON', init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{oops' } },
-    { case: '字段类型不是字符串', init: postJson({ username: 123, password: 'password123' }) },
+    { case: '字段类型不是字符串', init: postJson({ username: 123, password: TEST_PASSWORD }) },
   ])('请求体不合法（$case）：400 + bad_request', async ({ init }) => {
     const { status, body } = await requestJson('/api/auth/register', init)
     expect(status).toBe(400)
@@ -125,13 +131,13 @@ describe('POST /api/auth/register', () => {
 
 describe('POST /api/auth/login', () => {
   async function registerAlice(): Promise<void> {
-    const { status } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: 'password123' }))
+    const { status } = await requestJson('/api/auth/register', postJson({ username: 'alice', password: TEST_PASSWORD }))
     expect(status).toBe(201)
   }
 
   it('登录成功：200，返回 token 与 user 视图', async () => {
     await registerAlice()
-    const { status, body } = await requestJson('/api/auth/login', postJson({ username: 'alice', password: 'password123' }))
+    const { status, body } = await requestJson('/api/auth/login', postJson({ username: 'alice', password: TEST_PASSWORD }))
 
     expect(status).toBe(200)
     expect(stringField(body, 'token').split('.')).toHaveLength(3)
@@ -140,8 +146,8 @@ describe('POST /api/auth/login', () => {
 
   it('密码错误与用户不存在：同为 401 + unauthorized，且文案一致（不区分原因）', async () => {
     await registerAlice()
-    const wrongPassword = await requestJson('/api/auth/login', postJson({ username: 'alice', password: 'password456' }))
-    const unknownUser = await requestJson('/api/auth/login', postJson({ username: 'ghost', password: 'password123' }))
+    const wrongPassword = await requestJson('/api/auth/login', postJson({ username: 'alice', password: WRONG_PASSWORD }))
+    const unknownUser = await requestJson('/api/auth/login', postJson({ username: 'ghost', password: TEST_PASSWORD }))
 
     expect(wrongPassword.status).toBe(401)
     expect(unknownUser.status).toBe(401)
@@ -162,7 +168,7 @@ describe('GET /api/auth/me（受保护路由示例）', () => {
   }
 
   it('带合法 token：200 返回当前用户', async () => {
-    const token = await registerAndLogin('alice', 'password123')
+    const token = await registerAndLogin('alice', TEST_PASSWORD)
     const { status, body } = await requestJson('/api/auth/me', bearerGet(token))
 
     expect(status).toBe(200)
