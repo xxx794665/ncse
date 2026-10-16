@@ -11,3 +11,4 @@ export {
 } from './practice-api'
 export { disposeWrongBookApi, fetchWrongBookApi } from './wrong-book-api'
 export { addFavoriteApi, fetchFavoritesApi, removeFavoriteApi } from './favorites-api'
+export { fetchStatsSummaryApi } from './stats-api'

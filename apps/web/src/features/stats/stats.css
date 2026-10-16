@@ -1,0 +1,359 @@
+/* 统计页（T1-11b）：总览 StatChip 行 + 分模块卡栅格 + 近 30 天双色柱状图
+   移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
+   字面量均为规范定值：空态图标 48（§6.8）、徽章骨架高 32（§6.6）、1px 边框（例外）；
+   趋势柱区高引用已登记 token --layout-stats-chart（§9 表 E，T1-11b 补登记） */
+
+/* ===== 页头（形态同 practice-hero / review-hero） ===== */
+
+.stats-hero {
+  margin-bottom: var(--spacing-xl);
+}
+
+.stats-hero__title {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+@media (min-width: 1024px) {
+  .stats-hero__title {
+    font-size: var(--font-size-h1);
+  }
+}
+
+.stats-hero__desc {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+/* ===== 区块（形态同 practice-section） ===== */
+
+.stats-section {
+  margin-bottom: var(--spacing-2xl);
+}
+
+.stats-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-xs) var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.stats-section__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.stats-section__desc {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 总览区：StatChip 行（§6.6，组件自带形态，此处只管排布） ===== */
+
+.stats-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+}
+
+/* ===== 分模块卡栅格（移动 1 列 / ≥768px 2 列；骨架与实卡共用同一栅格，切换不跳版式） ===== */
+
+.stats-modules {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .stats-modules {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+/* ===== 分模块卡 ===== */
+
+.stats-module {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.stats-module__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.stats-module__name {
+  margin: 0;
+  font-size: var(--font-size-body-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+.stats-module__answered {
+  flex-shrink: 0;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-tertiary);
+}
+
+/* 计数数字：mono + tabular-nums（§3.1），次级强调 */
+.stats-module__num {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 正确率双色比例条：轨道 bg-muted + 答对 primary + 答错 danger（形态同会话进度条；
+   答错段用 danger 而非 danger-soft——soft 为背景面色，浅色主题下近白不可辨，视觉代理验收结论） */
+.stats-module__bar {
+  display: flex;
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.stats-module__seg {
+  height: 100%;
+}
+
+.stats-module__seg--correct {
+  background-color: var(--color-primary);
+}
+
+.stats-module__seg--wrong {
+  background-color: var(--color-danger);
+}
+
+.stats-module__stats {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 趋势区：双色叠放柱状图（纯 div 手绘；柱宽 flex 自适应，390px 不横向溢出） ===== */
+
+.stats-trend__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* 图例色点：8px（--spacing-xs）圆形，色与柱段一致 */
+.stats-trend__dot {
+  width: var(--spacing-xs);
+  height: var(--spacing-xs);
+  border-radius: var(--radius-full);
+}
+
+.stats-trend__dot--correct {
+  background-color: var(--color-primary);
+}
+
+.stats-trend__dot--wrong {
+  background-color: var(--color-danger);
+}
+
+.stats-trend__legend .stats-trend__dot--wrong {
+  margin-left: var(--spacing-xs);
+}
+
+/* 柱区：固定高（--layout-stats-chart），底边 1px 为 x 轴基线 */
+.stats-trend__chart {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-3xs);
+  height: var(--layout-stats-chart);
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.stats-trend__col {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  height: 100%;
+}
+
+/* 柱体：高度 = 当日作答量占窗口峰值比（组件内联，数据驱动）；答错段在上、答对段在下 */
+.stats-trend__bar {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  min-height: var(--spacing-3xs);
+  overflow: hidden;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+
+.stats-trend__seg {
+  width: 100%;
+}
+
+.stats-trend__seg--correct {
+  background-color: var(--color-primary);
+}
+
+.stats-trend__seg--wrong {
+  background-color: var(--color-danger);
+}
+
+/* x 轴：与柱区同构 flex（同 gap、同 1fr）保证刻度与柱一一对齐；首/末刻度贴边防溢出 */
+.stats-trend__axis {
+  display: flex;
+  gap: var(--spacing-3xs);
+  margin-top: var(--spacing-2xs);
+}
+
+.stats-trend__tick {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: visible;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-micro);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.stats-trend__tick:first-child {
+  text-align: left;
+}
+
+.stats-trend__tick:last-child {
+  text-align: right;
+}
+
+/* ===== 空态（§6.8：图标 48px text-tertiary + 一句引导 + 引导按钮） ===== */
+
+.stats-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl) var(--spacing-lg);
+  text-align: center;
+}
+
+.stats-empty__icon {
+  width: 48px;
+  height: 48px;
+  color: var(--color-text-tertiary);
+}
+
+.stats-empty__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+/* ===== 加载失败（danger-soft 提示条 + 重试，T1-08f 模式） ===== */
+
+.stats-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.stats-error__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* ===== 加载骨架（§6.8：bg-muted 圆角块 + 呼吸动画；三区各给形似占位） ===== */
+
+/* 徽章骨架行：与总览 StatChip 行同构（移动 2 列 / ≥768px 4 列，高 32 取 §6.6 徽章定值） */
+.stats-skeleton-chips {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-2xl);
+}
+
+@media (min-width: 768px) {
+  .stats-skeleton-chips {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* 模块骨架栅格：与 stats-modules 同构 */
+.stats-skeleton-modules {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-2xl);
+}
+
+@media (min-width: 768px) {
+  .stats-skeleton-modules {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+.stats-skeleton {
+  background-color: var(--color-bg-muted);
+  animation: stats-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+.stats-skeleton--chip {
+  height: 32px;
+  border-radius: var(--radius-full);
+}
+
+.stats-skeleton--card {
+  min-height: var(--spacing-4xl);
+  border-radius: var(--radius-lg);
+}
+
+.stats-skeleton--chart {
+  height: var(--layout-stats-chart);
+  border-radius: var(--radius-lg);
+}
+
+@keyframes stats-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats-skeleton {
+    animation: none;
+  }
+}

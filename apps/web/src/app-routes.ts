@@ -21,7 +21,7 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；review=错题/难点/收藏三视图实页（T1-10b）；placeholder=未实现功能占位 */
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；review=错题/难点/收藏三视图实页（T1-10b）；stats=基础统计实页（T1-11b）；placeholder=未实现功能占位 */
 export type AppRouteKind =
   | 'home'
   | 'design'
@@ -30,6 +30,7 @@ export type AppRouteKind =
   | 'practice'
   | 'practice-session'
   | 'review'
+  | 'stats'
   | 'placeholder'
 
 export interface AppRoute {
@@ -45,7 +46,7 @@ export interface AppRoute {
   requiresAuth?: boolean
   /** 内部路由（T1-08f）：不进首页速记入口（如作答页等二级页，仅经页内导航到达） */
   internal?: boolean
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session/review）不设 */
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session/review/stats）不设 */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -103,9 +104,8 @@ export const APP_ROUTES: AppRoute[] = [
     key: 'stats',
     title: '统计',
     icon: ChartColumn,
-    kind: 'placeholder',
-    milestone: 'M1',
-    description: '正确率、用时、模块分布与趋势的基础统计（功能清单 F1-9）。',
+    kind: 'stats',
+    requiresAuth: true,
     summary: '正确率、用时与模块趋势',
   },
   {

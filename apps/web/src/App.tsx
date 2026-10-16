@@ -2,7 +2,7 @@
  * 应用根组件：路由全量注册（按 app-routes 注册表生成，单一权威来源）
  * - 实页：/ 首页仪表盘骨架、/design 组件库演示、/login 登录、/register 注册（T1-16）、
  *   /practice 专项刷题模块选择（T1-08f）、/practice/sessions/:id 专项刷题作答（T1-08g）、
- *   /review 错题/难点/收藏三视图（T1-10b）
+ *   /review 错题/难点/收藏三视图（T1-10b）、/stats 基础统计（T1-11b）
  * - requiresAuth 路由（如 /practice）经 RequireAuth 守卫：restoring 加载态 / 匿名跳 /login
  * - 未实现功能按注册表统一渲染 EmptyPlaceholder（设计规范 §6.7）；未匹配路由 fallback NotFoundPage
  * - 全站套 AppLayout（PC TopNav / 移动 BottomTab + 主题三态控件）
@@ -22,6 +22,7 @@ import { NotFoundPage, PlaceholderPage } from './features/placeholder/placeholde
 import { PracticePage } from './features/practice/practice-page'
 import { PracticeSessionPage } from './features/practice/session-page'
 import { ReviewPage } from './features/review/review-page'
+import { StatsPage } from './features/stats/stats-page'
 import './app.css'
 
 export function App() {
@@ -64,6 +65,16 @@ export function App() {
             }
             if (route.kind === 'review') {
               const page = <ReviewPage />
+              return (
+                <Route
+                  key={route.key}
+                  path={route.path}
+                  element={route.requiresAuth ? <RequireAuth>{page}</RequireAuth> : page}
+                />
+              )
+            }
+            if (route.kind === 'stats') {
+              const page = <StatsPage />
               return (
                 <Route
                   key={route.key}
