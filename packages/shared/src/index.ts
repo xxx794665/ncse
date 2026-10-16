@@ -2,7 +2,8 @@
  * @ncse/shared — 前后端共用类型与常量。
  * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
  * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）、
- * 判分与错题本 DTO（T1-08c）、错题本/难点本列表与收藏 DTO 及建会话 wrong_redo 模式（T1-10a）；
+ * 判分与错题本 DTO（T1-08c）、错题本/难点本列表与收藏 DTO 及建会话 wrong_redo 模式（T1-10a）、
+ * 统计汇总 DTO（T1-11a）；
  * 后续将承载：其余业务 DTO 等。
  */
 
@@ -378,6 +379,72 @@ export interface FavoriteToggleResponse {
   questionId: number
   /** 操作后是否在收藏（POST 恒 true、DELETE 恒 false） */
   favorited: boolean
+}
+
+/* ============ 统计 DTO（T1-11a 定稿，前端 T1-11b 直接复用） ============ */
+
+/** 统计趋势窗口天数（GET /api/stats/summary 的 daily 数组长度与窗口口径；两端共用同一常量，勿单方改值） */
+export const STATS_TREND_DAYS = 30
+
+/**
+ * 练习作答的全历史聚合（GET /api/stats/summary 的 overall，T1-11a）。
+ * 正确率与均时刻意不预计算：前端由 correct/answered、totalDurationMs/answered 派生
+ * （answered=0 时除零兜底归前端处理，服务端不特判）。
+ */
+export interface PracticeOverallStats {
+  /** 累计作答次数（practice_records 行数） */
+  answered: number
+  /** 累计答对次数 */
+  correct: number
+  /** 累计用时（毫秒） */
+  totalDurationMs: number
+  /** 累计超时次数 */
+  timeoutCount: number
+}
+
+/**
+ * 分模块作答聚合（GET /api/stats/summary 的 modules，T1-11a）。
+ * 仅含有作答记录的模块（无记录模块不出现，前端自行零填），moduleCode 升序。
+ */
+export interface PracticeModuleStat {
+  /** 行测模块编码 */
+  moduleCode: XingceModuleCode
+  /** 该模块累计作答次数 */
+  answered: number
+  /** 该模块累计答对次数 */
+  correct: number
+  /** 该模块累计用时（毫秒） */
+  totalDurationMs: number
+  /** 该模块累计超时次数 */
+  timeoutCount: number
+}
+
+/**
+ * 逐日作答趋势项（GET /api/stats/summary 的 daily，T1-11a）。
+ * date 为北京时间日（'YYYY-MM-DD'，中国省考受众的日界）；数组恰 STATS_TREND_DAYS 项、
+ * 日期升序（最旧在前、北京时间今日在末）、中间无记录的天零填空。
+ */
+export interface PracticeDailyStat {
+  /** 北京时间日（'YYYY-MM-DD'） */
+  date: string
+  /** 当日作答次数 */
+  answered: number
+  /** 当日答对次数 */
+  correct: number
+}
+
+/**
+ * GET /api/stats/summary 响应体（T1-11a，直接返回不包壳）。
+ * overall 与 modules 为全历史聚合（窗口外的历史记录仍计入）；daily 只反映最近
+ * STATS_TREND_DAYS 天窗口（窗口外不计入，见 statsRoute 文件头）。
+ */
+export interface StatsSummaryResponse {
+  /** 全历史聚合 */
+  overall: PracticeOverallStats
+  /** 分模块聚合（仅含有作答记录的模块，moduleCode 升序） */
+  modules: PracticeModuleStat[]
+  /** 近 STATS_TREND_DAYS 天北京时间日趋势（零填空、升序、今日在末） */
+  daily: PracticeDailyStat[]
 }
 
 export * from './blueprint.js'
