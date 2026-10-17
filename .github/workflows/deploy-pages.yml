@@ -1,0 +1,68 @@
+name: Deploy Pages
+
+# GH Pages 前端发布（T1-13b）：main 分支 web 相关改动 → 构建 apps/web → 发布 Pages。
+# 与 ci.yml（全量门禁）并行：本工作流只负责构建与发布，质量门禁由 CI 保证。
+# Pages 站点：https://xxx794665.github.io/ncse/（子路径由 apps/web/.env.production 的 VITE_BASE_PATH 决定）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/shared/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只保留最新一次发布，旧的运行取消
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy-pages:
+    name: build & deploy web
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build (shared + web)
+        run: npm run build
+      # GH Pages 静态托管不回退 SPA 路由：深链（如 /ncse/practice）命中 404.html，
+      # 复制构建产物 index.html 使应用照常引导后由 Router 按 pathname 渲染（状态码 404 属预期）。
+      - name: SPA deep-link fallback (404)
+        run: cp apps/web/dist/index.html apps/web/dist/404.html
+      # Workers 线上端点 healthz canary：本地（大陆）对 workers.dev 被 DNS 污染 + SNI 封锁无法验证，
+      # 由境外 runner 先验证 API 可用再发布前端（T1-13a 的 HTTP 级验证亦由本步骤承载）。
+      - name: API canary (Workers healthz)
+        run: |
+          set -e
+          body=$(curl -sS --fail --retry 3 --retry-delay 5 https://ncse-api.249939260.workers.dev/healthz)
+          echo "$body"
+          echo "$body" | grep -q '"status":"ok"'
+          echo "$body" | grep -q '"service":"ncse-api"'
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          # Pages 未启用时尝试启用（source = GitHub Actions）；已启用时为幂等空操作
+          enablement: true
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
