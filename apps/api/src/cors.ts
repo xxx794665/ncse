@@ -1,11 +1,11 @@
 /**
  * CORS 白名单：正式前端 Origin 列表。
- * 当前为 GH Pages 项目页 origin（仓库 github.com/xxx794665/ncse，站点 https://xxx794665.github.io/ncse/；
- * origin 只含协议+主机，不含 /ncse 路径）；本地开发另放行 vite dev server（http://localhost:5173）。
- * 正式域名（tiku.<域名>）待用户决策后替换/追加（docs/架构设计.md §7、T1-13）。
+ * 正式域名（GH Pages 自定义域，T1-13c 用户落地）：https://ncse.xxx794665.party
+ * （旧 github.io 项目页 origin 已随自定义域名收敛移除——github.io/ncse/ 现已 301 至正式域名，
+ * 该 origin 不再实际运行应用）；本地开发另放行 vite dev server（http://localhost:5173）。
  */
 export const ALLOWED_ORIGINS: readonly string[] = [
-  'https://xxx794665.github.io',
+  'https://ncse.xxx794665.party',
   'http://localhost:5173',
 ]
 

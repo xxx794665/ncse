@@ -12,9 +12,9 @@ import { errorField, requestJson, stringField } from './api-helpers'
 /** 真实 worker 入口（src/index.ts 组合根；测试不直接调内部路由） */
 const worker = exports.default
 
-/** CORS 白名单 Origin（与 src/cors.ts ALLOWED_ORIGINS 两项一一对应：本地 dev + GH Pages 正式 origin） */
+/** CORS 白名单 Origin（与 src/cors.ts ALLOWED_ORIGINS 两项一一对应：本地 dev + 正式域名） */
 const LOCAL_DEV_ORIGIN = 'http://localhost:5173'
-const DEPLOY_ORIGIN = 'https://xxx794665.github.io'
+const DEPLOY_ORIGIN = 'https://ncse.xxx794665.party'
 
 /**
  * 发 CORS 预检 OPTIONS 请求（浏览器对 POST 端点预检的真实形态：
@@ -57,7 +57,7 @@ describe('CORS 中间件（白名单 Origin 放行、非白名单拒绝）', () 
     expectPreflightAllowed(response, LOCAL_DEV_ORIGIN)
   })
 
-  it('预检放行（白名单第二项）：Origin 为 GH Pages 正式 origin，同样放行并回显', async () => {
+  it('预检放行（白名单第二项）：Origin 为正式域名，同样放行并回显', async () => {
     const response = await preflight(DEPLOY_ORIGIN)
 
     expectPreflightAllowed(response, DEPLOY_ORIGIN)
