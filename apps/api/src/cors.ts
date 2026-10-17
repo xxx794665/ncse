@@ -1,10 +1,11 @@
 /**
- * CORS 白名单（占位常量）。
- * 部署时将 tiku.example.com 替换为正式前端域名（docs/架构设计.md §7、T1-13）；
- * 本地开发另放行 vite dev server（http://localhost:5173）。
+ * CORS 白名单：正式前端 Origin 列表。
+ * 当前为 GH Pages 项目页 origin（仓库 github.com/xxx794665/ncse，站点 https://xxx794665.github.io/ncse/；
+ * origin 只含协议+主机，不含 /ncse 路径）；本地开发另放行 vite dev server（http://localhost:5173）。
+ * 正式域名（tiku.<域名>）待用户决策后替换/追加（docs/架构设计.md §7、T1-13）。
  */
 export const ALLOWED_ORIGINS: readonly string[] = [
-  'https://tiku.example.com',
+  'https://xxx794665.github.io',
   'http://localhost:5173',
 ]
 

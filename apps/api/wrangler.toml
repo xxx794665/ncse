@@ -2,24 +2,22 @@ name = "ncse-api"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 
-# 本地开发配置（`npm run dev` = wrangler dev）。
-# 正式部署配置（子域/DNS、D1/R2 绑定、环境分离）在 T1-13 补充。
+# 本地开发配置（`npm run dev` = wrangler dev）；`wrangler deploy` 用同一配置发远端。
 # 凭据一律走 `wrangler secret`；本地用不入库的 .dev.vars（CLAUDE.md 安全约束）。
 [dev]
 port = 8787
 
 # D1 数据库绑定（T1-02 落地；schema 见 src/db/schema/，迁移产物见 apps/api/migrations/）。
-# database_id 为刻意选用的全零占位值：本地 `wrangler dev` / `--local` 模式不校验真实 ID、不访问远端；
-# T1-13 部署时替换为 `wrangler d1 create ncse-db` 产出的真实 ID（本任务不创建任何远程资源）。
+# database_id 为远端真实库（T1-13 创建于 WNAM 区域；本地 `--local` 模式不读该 ID）。
+# 远端 schema 变更：`wrangler d1 migrations apply ncse-db --remote`。
 [[d1_databases]]
 binding = "DB"
 database_name = "ncse-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "887c5e14-05f0-4042-b2fb-8505d5757a6b"
 migrations_dir = "migrations"
 
 # R2 图片桶绑定（T1-08d 落地；题目图片内容寻址对象，键形态见 ADR-0007）。
-# bucket_name 为占位桶名：本地 `wrangler dev` 自动模拟本地 R2、不触远端；
-# T1-13 部署时 `wrangler r2 bucket create ncse-images` 换真实桶（本任务不创建任何远程资源）。
+# 桶 ncse-images 已于 T1-13 创建（WNAM）；本地 dev 消费本地模拟 R2，远端为真实桶。
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "ncse-images"
