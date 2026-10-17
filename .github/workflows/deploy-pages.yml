@@ -54,11 +54,45 @@ jobs:
           echo "$body"
           echo "$body" | grep -q '"status":"ok"'
           echo "$body" | grep -q '"service":"ncse-api"'
+      # 探测并按需启用 Pages（source = GitHub Actions）。首跑 configure-pages 的 enablement 分支失败，
+      # 改用 runner 预装 gh + 本 workflow 的 GITHUB_TOKEN（pages: write）直接调 REST API，
+      # 诊断结果写入 GITHUB_OUTPUT 并经下方 Signal 步骤的结论外显（步骤结论可经公开 API 远程读取）。
+      - name: Probe & enable Pages site
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/tmp/pages-info.json 2>/tmp/pages-err.txt; then
+            echo "state=exists" >> "$GITHUB_OUTPUT"
+            cat /tmp/pages-info.json
+          elif grep -qi "Not Found" /tmp/pages-err.txt; then
+            echo "state=not_found" >> "$GITHUB_OUTPUT"
+            if gh api --method POST "repos/${GITHUB_REPOSITORY}/pages" -f build_type=workflow >/tmp/pages-create.json 2>/tmp/pages-create-err.txt; then
+              echo "created=true" >> "$GITHUB_OUTPUT"
+              cat /tmp/pages-create.json
+            else
+              echo "created=false" >> "$GITHUB_OUTPUT"
+              cat /tmp/pages-create-err.txt
+            fi
+          else
+            echo "state=forbidden_or_other" >> "$GITHUB_OUTPUT"
+            cat /tmp/pages-err.txt
+            exit 1
+          fi
+      - name: 'Signal: Pages site already exists'
+        if: steps.pages.outputs.state == 'exists'
+        run: echo "Pages site already exists"
+      - name: 'Signal: Pages site created via API'
+        if: steps.pages.outputs.state == 'not_found' && steps.pages.outputs.created == 'true'
+        run: echo "Pages site created (build_type=workflow)"
+      # 未能自动启用：GITHUB_TOKEN 无权创建 Pages 站点——需用户在仓库 Settings→Pages 手动选
+      # Source=GitHub Actions（一次性），之后本工作流即可全自动发布。
+      - name: 'Signal: enable failed (needs one-time manual enable in repo Settings→Pages)'
+        if: steps.pages.outputs.state == 'not_found' && steps.pages.outputs.created == 'false'
+        run: exit 1
       - name: Setup Pages
         uses: actions/configure-pages@v5
-        with:
-          # Pages 未启用时尝试启用（source = GitHub Actions）；已启用时为幂等空操作
-          enablement: true
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
