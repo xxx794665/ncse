@@ -12,9 +12,13 @@
  * 提取；缓存命中优先于 staging（已缓存键本次不再读 staging 文件，staging 内容事后
  * 变更不影响已缓存文本——防抖动；方法论变更重提取 = 手动删 vision-manifest 对应
  * 条目）。manifest 的 version 取自 import-manifest.json 仅作登记，缓存判定只看键。
- * 模块 JSON 回写按题原子：仅当该题全部枚举图片段都已有文本（缓存或本次吸收）时
- * 回写 visionText，任一段 pending 或 error 保持现值不动（不写半截）；仅在计算值
- * ≠ 现值时写文件（序列化格式与既有产物完全一致）。manifest 写出 dirty 判定 =
+ * 模块 JSON 回写按题原子（ADR-0011 两级宿主）：题干与选项为必选宿主——仅当该题
+ * 全部必选段已有文本（缓存或本次吸收）时回写 visionText（解析段文本在手则并入
+ * 拼接、缺失不阻塞——「解析缺省可入」），任一必选段 pending 或 error 保持现值
+ * 不动（不写半截）；仅在计算值 ≠ 现值时写文件（序列化格式与既有产物完全一致）。
+ * 提取范围（manifest.pending 与 pending 键的工件存在性检查）只覆盖必选键——被任
+ * 意题目的题干或选项引用过的键才进 pending（纯解析键出范围；其已有文本仍入
+ * entries 缓存）。manifest 写出 dirty 判定 =
  * 文件不存在或新序列化字节 ≠ 磁盘字节；无变更重跑（全缓存、无 pending 变化、无
  * 新 issue）为纯校验性 no-op，不写任何文件。孤儿 staging 文件（键未被任何枚举段
  * 引用）静默忽略——吸收只认枚举键。
@@ -52,6 +56,8 @@ interface KeyState {
   refs: number
   /** 工件存在性检查是否已做（检查按键去重，防同键多段重复 issue） */
   artifactChecked: boolean
+  /** 是否被必选宿主（题干/选项）引用过（ADR-0011：提取范围只收必选键；解析独占键出范围） */
+  inScope: boolean
 }
 
 /** 题目视图（image-stage 收窄 + visionText 字段；回写作用于 JSON 原对象，整模块随后重新序列化） */
@@ -150,7 +156,8 @@ export async function runVisionStage(options: VisionStageOptions): Promise<Visio
   const pending: string[] = []
   for (const state of ctx.keyStates.values()) {
     if (state.text !== null) entries.push({ key: state.key, text: state.text, refs: state.refs })
-    else pending.push(state.key)
+    // pending 只收必选键（ADR-0011：纯解析键出提取范围，不驱动批次与退出码）
+    else if (state.inScope) pending.push(state.key)
   }
   stats.images = ctx.keyStates.size
   stats.extracted = entries.length
@@ -176,56 +183,84 @@ export async function runVisionStage(options: VisionStageOptions): Promise<Visio
 /* ============ 单题处理 ============ */
 
 /**
- * 处理单道题的题目宿主图片段：题干 → 选项数组序 → 解析（宿主内按段序）。
- * 全部段已有文本（缓存或本次吸收）→ visionText 回写为各段文本 '\n' 连接（仅
- * 计算值 ≠ 现值时改写 JSON 原对象，整模块随后重新序列化）；任一段 pending 或
- * error → 保持现值不动（按题原子，不写半截）。返回该题是否发生 visionText 改写。
+ * 处理单道题的题目宿主图片段。宿主分两级（ADR-0011）：题干与选项为必选宿主，
+ * 解析为可选宿主（「解析缺省可入」）：
+ * - 必选段全部有文本（缓存或本次吸收）→ 参与回写拼接；任一必选段 pending 或
+ *   error（未键路径/读取失败）→ 该题不回写（按题原子保持现值，防半截）。
+ * - 可选段文本在手 → 并入拼接（段序仍为题干 → 选项序 → 解析序）；未就绪（pending
+ *   或未键）→ 不阻塞该题回写、不检查工件（纯解析键出提取范围，pending 不收）。
+ * 题目最终 visionText = texts 以 '\n' 连接（仅计算值 ≠ 现值时改写 JSON 原对象，
+ * 整模块随后重新序列化）。返回该题是否发生 visionText 改写。
  */
 function processQuestion(
   ctx: VisionContext,
   question: VisionQuestionView,
   paperFile: string,
 ): boolean {
-  const hosts: SegmentView[][] = [
-    question.stem,
-    ...question.options.map((option) => option.content),
-    question.analysis,
-  ]
   const texts: string[] = []
-  let complete = true
+  // 必选宿主（题干/选项）：任一段未就绪该题不回写；可选宿主（解析）：缺省可入（ADR-0011）
+  const mandatoryReady = processHosts(
+    ctx,
+    [question.stem, ...question.options.map((option) => option.content)],
+    paperFile,
+    question.qid,
+    texts,
+    true,
+  )
+  processHosts(ctx, [question.analysis], paperFile, question.qid, texts, false)
+  if (!mandatoryReady) return false
+  const computed = texts.join('\n')
+  if (computed === question.visionText) return false
+  question.visionText = computed
+  return true
+}
+
+/**
+ * 处理一组宿主的图片段。mandatory=true（必选宿主=题干/选项）：未就绪段（未键路径
+ * /pending）使返回 false，pending 键做工件存在性检查；mandatory=false（可选宿主=
+ * 解析）：未键路径仍记 error（images 阶段失败的可见性），但 pending 不阻塞、不做
+ * 工件检查（纯解析键出提取范围）。有文本的段计入 refs 与 texts（段序保持遍历序，
+ * 题干 → 选项序 → 解析序的拼接次序由调用方两次调用保证）。
+ */
+function processHosts(
+  ctx: VisionContext,
+  hosts: SegmentView[][],
+  paperFile: string,
+  qid: string,
+  texts: string[],
+  mandatory: boolean,
+): boolean {
+  let ready = true
   for (const segments of hosts) {
     for (const segment of segments) {
       if (segment.type !== 'image') continue
       ctx.stats.references++
-      // 未键路径：images 阶段未跑或该段失败，视觉无键可定位 → error 且该题不回写
+      // 未键路径：images 阶段未跑或该段失败，视觉无键可定位 → error；必选宿主同时置不就绪
       if (!KEYED_PATH_PATTERN.test(segment.path)) {
         ctx.issues.push(
           issue(
             'error',
             'vision_requires_images',
             paperFile,
-            question.qid,
+            qid,
             `图片段 path 未键化，需先跑 images 阶段：${segment.path}`,
           ),
         )
-        complete = false
+        if (mandatory) ready = false
         continue
       }
-      const state = resolveKeyState(ctx, segment.path, paperFile, question.qid)
+      const state = resolveKeyState(ctx, segment.path, paperFile, qid)
+      if (mandatory) state.inScope = true
       if (state.text !== null) {
         state.refs++
         texts.push(state.text)
-      } else {
-        checkArtifact(ctx, state, paperFile, question.qid)
-        complete = false
+      } else if (mandatory) {
+        checkArtifact(ctx, state, paperFile, qid)
+        ready = false
       }
     }
   }
-  if (!complete) return false
-  const computed = texts.join('\n')
-  if (computed === question.visionText) return false
-  question.visionText = computed
-  return true
+  return ready
 }
 
 /**
@@ -236,7 +271,13 @@ function processQuestion(
 function resolveKeyState(ctx: VisionContext, key: string, paperFile: string, qid: string): KeyState {
   const existing = ctx.keyStates.get(key)
   if (existing !== undefined) return existing
-  const state: KeyState = { key, text: ctx.cache.get(key) ?? null, refs: 0, artifactChecked: false }
+  const state: KeyState = {
+    key,
+    text: ctx.cache.get(key) ?? null,
+    refs: 0,
+    artifactChecked: false,
+    inScope: false,
+  }
   if (state.text === null) absorbStaging(ctx, state, paperFile, qid)
   ctx.keyStates.set(key, state)
   return state

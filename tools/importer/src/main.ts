@@ -15,7 +15,9 @@
  * vision 模式：node dist/main.js vision --products <JSON 产物目录>（无其他旋钮）
  * （枚举题目宿主图片段，吸收 <产物目录>/vision-in/<键>.txt 的外部视觉子代理提取
  * 文本，按题原子回写 modules/*.json 的 visionText 并记 <产物目录>/
- * vision-manifest.json；staging 目录固定为产物目录下 vision-in/）。
+ * vision-manifest.json；staging 目录固定为产物目录下 vision-in/。回写原子性与
+ * 提取范围为两级宿主语义（ADR-0011）：题干/选项必选，解析缺省可入、纯解析键
+ * 不进 pending）。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目）；1 = 产物结构无效（manifest 缺失/模块 JSON 损坏）；
@@ -23,7 +25,7 @@
  * images 0 = 图片阶段成功（允许有 warning）；1 = 图片或上传统计存在 error 或产物结构无效；
  * 2 = 用法错误（缺参数、products/input 目录不存在、路径越界、--local/--concurrency
  * 无 --bucket、--concurrency 越界 2–16、wrangler 未安装、桶名或对象键不合规）。
- * vision 0 = 无 error 且无待提取键；1 = 存在 error 或仍有待提取键（或产物结构无效）；
+ * vision 0 = 无 error 且无待提取键（待提取 = 必选宿主键，ADR-0011）；1 = 存在 error 或仍有待提取键（或产物结构无效）；
  * 2 = 用法错误（缺 --products、products 目录不存在、路径越界）。
  * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求；vision 阶段零网络
  * 零凭据零子进程（看图由外部视觉子代理读 r2/ 工件完成，文本经 vision-in/ 交换）。

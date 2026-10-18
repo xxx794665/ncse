@@ -393,21 +393,109 @@ describe('runVisionStage：吸收回写', () => {
   })
 })
 
+/* ============ 解析缺省可入（ADR-0011 两级宿主） ============ */
+
+describe('runVisionStage：解析缺省可入（ADR-0011）', () => {
+  it('必选全齐而解析无 staging → 该题回写题干+选项文本（不含解析）；pending 为空（纯解析键出范围）', async () => {
+    const dir = scenario('analysis-optional')
+    // 全部必选键 + 共享键有 staging，唯解析键（K_ANALYSIS）的 staging 删除
+    stageAllExceptQ4b(dir)
+    writeStaging(dir, K_Q4B, T_Q4B)
+    fs.rmSync(resolveWithin(dir, `vision-in/${K_ANALYSIS}.txt`))
+    const result = await runVisionStage({ productsDir: dir })
+    expect(result.stats).toEqual({
+      references: 7,
+      images: 6,
+      extracted: 5,
+      pending: 0,
+      errors: 0,
+      warnings: 0,
+    })
+    const papers = readPapers(dir, 'political_theory')
+    // 第 1 题：题干+选项文本回写，解析缺省不入拼接
+    expect(findQuestion(papers, '700301')?.visionText).toBe([T_STEM, T_OPTION].join('\n'))
+    // 第 4 题两图全齐 → 正常回写（对照）
+    expect(findQuestion(papers, '700304')?.visionText).toBe(V4_TEXT)
+    // 纯解析键：无 entries 条目、不在 pending（出提取范围）
+    const manifest = readVisionManifest(dir)
+    expect(manifest.entries.find((entry) => entry.key === K_ANALYSIS)).toBeUndefined()
+    expect(manifest.pending).toEqual([])
+  })
+
+  it('解析段未键化 → error vision_requires_images 仍记录，但不阻塞该题回写（必选全齐）', async () => {
+    const dir = scenario('analysis-unkeyed')
+    stageAllExceptQ4b(dir)
+    writeStaging(dir, K_Q4B, T_Q4B)
+    // 手工把第 1 题解析段 path 改回源相对路径（模拟 images 阶段该段失败保持源路径）
+    const papersPath = path.join(dir, 'modules', 'political_theory.json')
+    const root = JSON.parse(fs.readFileSync(papersPath, 'utf8')) as { papers: ParsedPaper[] }
+    const q1Analysis = findQuestion(root.papers, '700301')?.analysis
+    const seg = q1Analysis?.find((s) => s.type === 'image')
+    if (!seg) throw new Error('夹具第 1 题解析段缺失图片段')
+    seg.path = '../90-图片/题目图/analysis-v.png'
+    fs.writeFileSync(papersPath, JSON.stringify(root), 'utf8')
+    const result = await runVisionStage({ productsDir: dir })
+    expect(result.stats).toEqual({
+      references: 7,
+      images: 5,
+      extracted: 5,
+      pending: 0,
+      errors: 1,
+      warnings: 0,
+    })
+    expect(result.issues).toEqual([
+      {
+        severity: 'error',
+        code: 'vision_requires_images',
+        file: '01-政治理论/2024年虚构省公务员录用考试《行测》题（视觉甲卷）.md',
+        qid: '700301',
+        message: expect.stringContaining('../90-图片/题目图/analysis-v.png'),
+      },
+    ])
+    // 必选全齐 → 该题照常回写（解析未键不阻塞）
+    expect(findQuestion(readPapers(dir, 'political_theory'), '700301')?.visionText).toBe(
+      [T_STEM, T_OPTION].join('\n'),
+    )
+  })
+
+  it('纯解析 pending 键工件缺失 → 不报 artifact_missing（出范围不做工件检查）', async () => {
+    const dir = scenario('analysis-artifact-missing')
+    // 无任何 staging（全 pending 态）且删除解析键工件：旧语义会报 artifact_missing，ADR-0011 后纯解析键不检查
+    fs.rmSync(resolveWithin(dir, `r2/${K_ANALYSIS}`))
+    const result = await runVisionStage({ productsDir: dir })
+    expect(result.issues).toEqual([])
+    expect(result.stats.errors).toBe(0)
+    expect(result.pending).not.toContain(K_ANALYSIS)
+    // 必选键的工件缺失仍检查（对照：删题干工件必报）
+    fs.rmSync(resolveWithin(dir, `r2/${K_STEM}`))
+    const second = await runVisionStage({ productsDir: dir })
+    expect(second.issues).toEqual([
+      {
+        severity: 'error',
+        code: 'artifact_missing',
+        file: '01-政治理论/2024年虚构省公务员录用考试《行测》题（视觉甲卷）.md',
+        qid: '700301',
+        message: expect.stringContaining(K_STEM),
+      },
+    ])
+  })
+})
+
 /* ============ pending 与空白 staging ============ */
 
 describe('runVisionStage：pending 与空白 staging', () => {
-  it('无 staging → manifest.pending 含全部键（首见序），仅 manifest 落盘，模块 JSON 不回写', async () => {
+  it('无 staging → manifest.pending 只含必选键（ADR-0011：纯解析键 K_ANALYSIS 出范围），仅 manifest 落盘，模块 JSON 不回写', async () => {
     const dir = scenario('pending-all')
     const result = await runVisionStage({ productsDir: dir })
     expect(result.stats).toEqual({
       references: 7,
       images: 6,
       extracted: 0,
-      pending: 6,
+      pending: 5,
       errors: 0,
       warnings: 0,
     })
-    expect(result.pending).toEqual([K_STEM, K_OPTION, K_ANALYSIS, K_SHARED, K_Q4A, K_Q4B])
+    expect(result.pending).toEqual([K_STEM, K_OPTION, K_SHARED, K_Q4A, K_Q4B])
     expect(result.rewrote).toEqual([])
     expect(result.wrote).toEqual([path.join(dir, 'vision-manifest.json')])
     // 待提取是正常状态：不算 issue，退出语义由 CLI 判 1（见 CLI describe）
@@ -623,7 +711,7 @@ describe('runVisionStage：问题清单与产物校验', () => {
     const result = await runVisionStage({ productsDir: dir })
     expect(result.issues).toEqual([])
     expect(result.stats.extracted).toBe(0)
-    expect(result.pending).toEqual([K_STEM, K_OPTION, K_ANALYSIS, K_SHARED, K_Q4A, K_Q4B])
+    expect(result.pending).toEqual([K_STEM, K_OPTION, K_SHARED, K_Q4A, K_Q4B])
     const manifest = readVisionManifest(dir)
     expect(manifest.entries).toEqual([])
     expect(manifest.pending).not.toContain(K_MATERIAL)
