@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/client" />
 
 /** 构建期注入的环境变量（值来源：.env.development 本地开发 / .env.production 线上构建） */
 interface ImportMetaEnv {
