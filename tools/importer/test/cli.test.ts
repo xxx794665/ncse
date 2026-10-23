@@ -11,11 +11,12 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { main } from '../src/main.js'
 import { ImportPathEscapeError, resolveWithin, runImport } from '../src/pipeline.js'
-import type { ParsedGroup, ParsedPaper, ParsedQuestion } from '../src/types.js'
+import type { ParsedGroup, ParsedPaper, ParsedQuestion, PaperProduct } from '../src/types.js'
 
 const fixturesDir = fileURLToPath(new URL('./fixtures', import.meta.url))
 const cleanInput = path.join(fixturesDir, 'clean-input')
 const errorInput = path.join(fixturesDir, 'error-input')
+const paperInput = path.join(fixturesDir, 'paper-input')
 
 // 模块加载即建临时目录：describe 体在 beforeAll 之前执行，会引用 outDir
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncse-importer-test-'))
@@ -68,6 +69,11 @@ function readManifest(outRoot: string): { issues: Array<{ code: string; severity
   return JSON.parse(fs.readFileSync(path.join(outRoot, 'import-manifest.json'), 'utf8'))
 }
 
+/** 读 papers.json 试卷归属产物（T2-01a/ADR-0012） */
+function readPapersManifest(outRoot: string): { papers: PaperProduct[] } {
+  return JSON.parse(fs.readFileSync(path.join(outRoot, 'papers.json'), 'utf8'))
+}
+
 describe('runImport：合成干净输入', () => {
   it('统计与产物文件（根 README/90-图片 等非试卷输入被忽略）', () => {
     const out = path.join(outDir, 'clean')
@@ -97,7 +103,7 @@ describe('runImport：合成干净输入', () => {
       errors: 0,
       warnings: 0,
     })
-    // 产物 = manifest + 6 个模块 JSON；manifest 无时间戳等不确定值
+    // 产物 = manifest + papers.json + 6 个模块 JSON；manifest 无时间戳等不确定值
     expect(listFiles(out)).toEqual([
       'import-manifest.json',
       'modules/common_sense.json',
@@ -106,8 +112,11 @@ describe('runImport：合成干净输入', () => {
       'modules/political_theory.json',
       'modules/quantitative.json',
       'modules/verbal.json',
+      'papers.json',
     ])
     expect(result.manifest.version).toBe('v-test')
+    // 聚合卷数：clean 夹具每卷名唯一 → 与模块级试卷数一致
+    expect(result.paperCount).toBe(7)
   })
 
   it('分模块 JSON 内容可读且元数据 null 用例落地', () => {
@@ -150,6 +159,73 @@ describe('幂等与确定性', () => {
     for (const [rel, bytes] of snapA) {
       expect(snapB.get(rel)?.equals(bytes)).toBe(true)
     }
+  })
+})
+
+describe('papers.json 试卷归属产物（T2-01a/ADR-0012）', () => {
+  const out = path.join(outDir, 'papers')
+
+  it('跨模块同名卷聚合 + 元数据首个非空值：庚卷（01 政治 + 02 常识）为一条，辛卷独立一条', () => {
+    const result = runImport({ inputDir: paperInput, outputDir: out, version: 'v-paper' })
+    expect(result.paperCount).toBe(2)
+    const { papers } = readPapersManifest(out)
+    // 首遇序：模块目录序 → 文件名序（01 政治庚卷先于 03 言语辛卷）
+    expect(papers.map((paper) => paper.name)).toEqual([
+      '2024年某省联考《行测》题（虚构庚卷）',
+      '2024年某省联考《行测》题（虚构辛卷）',
+    ])
+    const geng = papers[0]
+    // 01 文件无地区（null）、02 文件地区「虚构省」→ 聚合取首个非空值；年份/卷型跨文件同值
+    expect(geng.year).toBe(2024)
+    expect(geng.region).toBe('虚构省')
+    expect(geng.paperType).toBe('联考')
+    // qids 首遇序 = 模块目录序 → 文件内 items 序；910101 在 02 常识同卷再次出现只记首见
+    expect(geng.qids).toEqual(['910101', '910102', '910201'])
+    expect(geng.questionCount).toBe(3)
+    const xin = papers[1]
+    expect(xin.year).toBe(2024)
+    expect(xin.region).toBe('虚构市')
+    expect(xin.paperType).toBe('联考')
+    expect(xin.qids).toEqual(['910301', '910101'])
+    expect(xin.questionCount).toBe(2)
+  })
+
+  it('重复 qid 双卷归属：910101 实体首见保留在庚卷（政治），辛卷归属保留但 modules JSON 不含该题', () => {
+    // modules 侧全局去重语义不变：后见题从模块 JSON 丢弃（02 常识庚卷的 910101、03 言语辛卷的 910101）
+    const politicalQids = readModulePapers(out, 'political_theory').flatMap((paper) =>
+      questionsOf(paper).map((q) => q.qid),
+    )
+    expect(politicalQids).toEqual(['910101', '910102'])
+    expect(readModulePapers(out, 'common_sense').flatMap((paper) => questionsOf(paper).map((q) => q.qid))).toEqual([
+      '910201',
+    ])
+    expect(readModulePapers(out, 'verbal').flatMap((paper) => questionsOf(paper).map((q) => q.qid))).toEqual(['910301'])
+    // 归属产物完整保留两卷对 910101 的归属（ADR-0012 恢复联考同题归属）
+    const { papers } = readPapersManifest(out)
+    expect(papers[0].qids).toContain('910101')
+    expect(papers[1].qids).toContain('910101')
+    // 去重问题清单两条：同卷重复（02 常识）与跨卷重复（03 言语）各一
+    const manifest = readManifest(out)
+    expect(manifest.issues.filter((entry) => entry.code === 'duplicate_qid')).toHaveLength(2)
+  })
+
+  it('字节确定性与重跑干净重建：两目录逐字节一致；被污染的旧产物重跑后恢复', () => {
+    const outA = path.join(outDir, 'papers-a')
+    const outB = path.join(outDir, 'papers-b')
+    runImport({ inputDir: paperInput, outputDir: outA, version: 'v-paper-idem' })
+    runImport({ inputDir: paperInput, outputDir: outB, version: 'v-paper-idem' })
+    expect(fs.readFileSync(path.join(outB, 'papers.json'))).toEqual(fs.readFileSync(path.join(outA, 'papers.json')))
+
+    // 污染旧产物（T2-01a 前的过期 papers.json + 多余模块 JSON）后同目录重跑 → 无条件覆盖重建
+    fs.writeFileSync(
+      resolveWithin(outA, 'papers.json'),
+      `${JSON.stringify({ papers: [{ name: '过期卷', year: null, region: null, paperType: null, questionCount: 1, qids: ['000000'] }] }, null, 2)}\n`,
+      'utf8',
+    )
+    fs.writeFileSync(resolveWithin(outA, 'modules/quantitative.json'), '{"module":"quantitative","papers":[]}\n', 'utf8')
+    runImport({ inputDir: paperInput, outputDir: outA, version: 'v-paper-idem' })
+    expect(fs.readFileSync(path.join(outA, 'papers.json'))).toEqual(fs.readFileSync(path.join(outB, 'papers.json')))
+    expect(fs.existsSync(path.join(outA, 'modules/quantitative.json'))).toBe(false)
   })
 })
 

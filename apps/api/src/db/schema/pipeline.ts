@@ -10,12 +10,16 @@ import { createdAt, updatedAt } from './common'
 /** 导入运行状态 */
 export type ImportRunStatus = 'running' | 'success' | 'failed'
 
-/** 导入产物统计（按实体计数，运行结束写入，运行中为全零） */
+/** 导入产物统计（按实体计数，运行结束写入，运行中为全零；T2-01a 增 papers/questionPapers） */
 export interface ImportRunStats {
   questions: number
   questionGroups: number
   images: number
   knowledgePoints: number
+  /** 试卷实体写入数（ADR-0012 papers upsert 行数） */
+  papers: number
+  /** 题目-试卷归属 pair 写入数（question_papers upsert 行数，含质量门跳过外的可解析归属） */
+  questionPapers: number
 }
 
 /** 一次导入运行：version 单调递增，input_digest 判断输入是否变化（变化 → 新 version 再蒸馏） */

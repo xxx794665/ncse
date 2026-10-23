@@ -152,6 +152,58 @@ export const questions = sqliteTable(
   ],
 )
 
+/**
+ * 试卷（ADR-0012）：卷级实体，与题目为多对多归属（question_papers）。
+ * name 为导入自然键（试卷名全库唯一，跨模块同名 Markdown 聚合为同一卷）；
+ * questionCount 为本次导入实际可解析的归属题数（question_papers 实际写入 pair 数，
+ * 非源卷声明题数）。试卷题序为近似口径：模块目录序 → 文件内 items 序
+ * （源数据无整卷题号元数据，真实卷模块顺序不符的后续按卷校正）。
+ */
+export const papers = sqliteTable(
+  'papers',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    /** 卷名（导入自然键，全库唯一；聚合键 = 源仓库各模块 Markdown 的同名卷） */
+    name: text('name').notNull(),
+    /** 年份（可空 = 未标定） */
+    year: integer('year'),
+    /** 地区（可空 = 未标定，如 '虚构省' 原值） */
+    region: text('region'),
+    /** 卷型（可空 = 未标定，如 '联考' / '省考'，自由文本） */
+    paperType: text('paper_type'),
+    /** 本次导入实际可解析的归属题数 */
+    questionCount: integer('question_count').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [uniqueIndex('papers_name_uq').on(table.name)],
+)
+
+/**
+ * 题目-试卷多对多归属（ADR-0012，推翻 T1-04 的单归因设计）：一份卷的完整题集 =
+ * 该卷在源仓库中出现的全部 qid（含与其他卷共享的联考同题）；题目实体仍全局唯一
+ * （qid 去重不变，仅归属改多对多）。sequence 为卷内题序（1 起），口径与 papers
+ * 注释一致：模块目录序 → 文件内 items 序，归属 pair 被质量门跳过时留空隙保真实卷序。
+ */
+export const questionPapers = sqliteTable(
+  'question_papers',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    paperId: integer('paper_id')
+      .notNull()
+      .references(() => papers.id, { onDelete: 'cascade' }),
+    questionId: integer('question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'cascade' }),
+    /** 卷内题序（1 起，近似口径） */
+    sequence: integer('sequence').notNull(),
+  },
+  (table) => [
+    uniqueIndex('question_papers_pair_uq').on(table.paperId, table.questionId),
+    index('question_papers_question_idx').on(table.questionId),
+  ],
+)
+
 /** 题目-知识点多对多：打标版本（产出该打标的 import_runs 序号）与来源（官方/AI/人工校对） */
 export const questionKnowledge = sqliteTable(
   'question_knowledge',

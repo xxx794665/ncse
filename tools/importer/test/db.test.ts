@@ -6,6 +6,10 @@
  * 幂等重放、字节确定性、数据质量门与 SQL 字面量转义。
  * T1-05 阶段 B 增 stats.images 断言：实际进 SQL 的 image 段 path 去重计数
  * （clean 夹具含 ../90-图片 引用与公式图；另造 img/ 键重写产物验证去重口径）。
+ * T2-01a/ADR-0012 增试卷归属断言：papers/question_papers upsert 与幂等（paper-input
+ * 合成夹具：跨模块同名卷聚合 + 跨卷重复 qid 双卷归属）、质量门跳过 pair 与
+ * paper_question_skipped warning、孤儿 pair/卷清理、papers.json 缺失
+ * （paper_manifest_missing → 退出码 1）与 stats.papers/questionPapers 计数。
  * 夹具全部为合成虚构题目；产物与 SQL 写入系统临时目录，测试后清理。
  */
 import fs from 'node:fs'
@@ -23,15 +27,18 @@ import type { ParsedGroup, ParsedPaper, ParsedQuestion } from '../src/types.js'
 const fixturesDir = fileURLToPath(new URL('./fixtures', import.meta.url))
 const cleanInput = path.join(fixturesDir, 'clean-input')
 const errorInput = path.join(fixturesDir, 'error-input')
+const paperInput = path.join(fixturesDir, 'paper-input')
 /** apps/api 迁移目录（本测试文件位于 tools/importer/test，仓库根为其上三级） */
 const migrationsDir = fileURLToPath(new URL('../../../apps/api/migrations', import.meta.url))
 
-// 模块加载即建临时目录并产出两套夹具产物：describe 体在 beforeAll 之前执行，会引用产物路径
+// 模块加载即建临时目录并产出三套夹具产物：describe 体在 beforeAll 之前执行，会引用产物路径
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncse-importer-db-'))
 const cleanProducts = path.join(outDir, 'clean-products')
 const errorProducts = path.join(outDir, 'error-products')
+const paperProducts = path.join(outDir, 'paper-products')
 runImport({ inputDir: cleanInput, outputDir: cleanProducts, version: 'v-db' })
 runImport({ inputDir: errorInput, outputDir: errorProducts, version: 'v-db-err' })
+runImport({ inputDir: paperInput, outputDir: paperProducts, version: 'v-paper' })
 
 afterAll(() => {
   fs.rmSync(outDir, { recursive: true, force: true })
@@ -251,9 +258,24 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     expect(runs[0].status).toBe('success')
     expect(runs[0].input_digest).toMatch(/^[0-9a-f]{64}$/)
     expect(runs[0].input_digest).toBe(result.inputDigest)
-    // images：clean 夹具实际进 SQL 的 image 段 path 去重 = 13（见下方图片统计用例的逐项清点）
-    expect(JSON.parse(runs[0].stats)).toEqual({ questions: 12, questionGroups: 3, images: 13, knowledgePoints: 0 })
-    expect(result.stats).toEqual({ questions: 12, questionGroups: 3, images: 13, knowledgePoints: 0 })
+    // images：clean 夹具实际进 SQL 的 image 段 path 去重 = 13（见下方图片统计用例的逐项清点）；
+    // papers/questionPapers：clean 夹具 7 卷名各自唯一、无质量门跳过 → 7 卷 12 pair
+    expect(JSON.parse(runs[0].stats)).toEqual({
+      questions: 12,
+      questionGroups: 3,
+      images: 13,
+      knowledgePoints: 0,
+      papers: 7,
+      questionPapers: 12,
+    })
+    expect(result.stats).toEqual({
+      questions: 12,
+      questionGroups: 3,
+      images: 13,
+      knowledgePoints: 0,
+      papers: 7,
+      questionPapers: 12,
+    })
     db.close()
   })
 
@@ -301,6 +323,199 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     }
     // version 只出现在头部注释与 import_runs 语句两行（文件字节确定性的另一面）
     expect(diffIndexes).toEqual([0, importRunsIndex])
+  })
+})
+
+describe('试卷与归属（T2-01a/ADR-0012，paper-input 产物）', () => {
+  /** 归属 pair 行视图：卷名 + qid + 卷内序（JOIN 展开便于断言） */
+  const pairRows = (db: DatabaseSync): Array<{ paper: string; qid: string; sequence: number }> =>
+    rows(
+      db,
+      `SELECT p.name AS paper, q.qid AS qid, qp.sequence AS sequence
+       FROM question_papers qp
+       JOIN papers p ON p.id = qp.paper_id
+       JOIN questions q ON q.id = qp.question_id
+       ORDER BY p.id, qp.sequence`,
+    )
+
+  it('papers/question_papers 写入：聚合卷 2 行、归属 5 pair，联考同题 910101 双卷归属恢复', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: paperProducts, version: 1 })
+    db.exec(result.sql)
+    expect(result.stats.papers).toBe(2)
+    expect(result.stats.questionPapers).toBe(5)
+    expect(result.issues).toEqual([])
+
+    const papers = rows<{
+      name: string
+      year: number
+      region: string
+      paper_type: string
+      question_count: number
+    }>(db, 'SELECT name, year, region, paper_type, question_count FROM papers ORDER BY id')
+    // 庚卷 = 01 政治 + 02 常识两份模块文件聚合（region 取首个非空值「虚构省」）；
+    // question_count = 实际写入 pair 数（可解析归属数，同原始 qids 长度——无门控）
+    expect(papers).toEqual([
+      {
+        name: '2024年某省联考《行测》题（虚构庚卷）',
+        year: 2024,
+        region: '虚构省',
+        paper_type: '联考',
+        question_count: 3,
+      },
+      {
+        name: '2024年某省联考《行测》题（虚构辛卷）',
+        year: 2024,
+        region: '虚构市',
+        paper_type: '联考',
+        question_count: 2,
+      },
+    ])
+
+    // 910101 实体仅首见一份（political_theory），但庚卷 seq=1 与辛卷 seq=2 双归属
+    expect(pairRows(db)).toEqual([
+      { paper: '2024年某省联考《行测》题（虚构庚卷）', qid: '910101', sequence: 1 },
+      { paper: '2024年某省联考《行测》题（虚构庚卷）', qid: '910102', sequence: 2 },
+      { paper: '2024年某省联考《行测》题（虚构庚卷）', qid: '910201', sequence: 3 },
+      { paper: '2024年某省联考《行测》题（虚构辛卷）', qid: '910301', sequence: 1 },
+      { paper: '2024年某省联考《行测》题（虚构辛卷）', qid: '910101', sequence: 2 },
+    ])
+    const modules = rows<{ module_id: number }>(
+      db,
+      `SELECT module_id FROM questions WHERE qid='910101'`,
+    )
+    const political = rows<{ code: string }>(db, "SELECT code FROM modules WHERE code='political_theory'")
+    expect(modules).toHaveLength(1)
+    expect(modules[0].module_id).not.toBeNull()
+    // 题目实体归属首见模块（政治理论），辛卷/庚卷常识侧仅记 pair 归属
+    expect(rows<{ code: string }>(db, `SELECT m.code AS code FROM modules m WHERE m.id=${modules[0].module_id}`)).toEqual(political)
+    db.close()
+  })
+
+  it('幂等重放：同一 SQL 再 exec → pair 行/序值与卷 id 均不变（ON CONFLICT 原地更新）', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: paperProducts, version: 1 })
+    db.exec(result.sql)
+    const pairsBefore = pairRows(db)
+    const papersBefore = rows<{ id: number; name: string }>(db, 'SELECT id, name FROM papers ORDER BY id')
+    db.exec(result.sql)
+    expect(pairRows(db)).toEqual(pairsBefore)
+    expect(rows<{ id: number; name: string }>(db, 'SELECT id, name FROM papers ORDER BY id')).toEqual(papersBefore)
+    db.close()
+  })
+
+  it('字节确定性：同产物同 version 两次生成全等；SQL 含 papers/pair upsert 与孤儿清理段', () => {
+    const a = runDbStage({ productsDir: paperProducts, version: 2 })
+    const b = runDbStage({ productsDir: paperProducts, version: 2 })
+    expect(b.sql).toBe(a.sql)
+    expect(a.sql).toContain('INSERT INTO papers (name, year, region, paper_type, question_count)')
+    expect(a.sql).toContain('INSERT INTO question_papers (paper_id, question_id, sequence)')
+    expect(a.sql).toContain('DELETE FROM question_papers ')
+    expect(a.sql).toContain('DELETE FROM papers ')
+    // import_runs 行 stats JSON 带试卷计数
+    expect(a.sql).toContain('"papers":2')
+    expect(a.sql).toContain('"questionPapers":5')
+  })
+})
+
+describe('归属 pair 质量门（error 产物）', () => {
+  it('qid 解析不到（门控题目）→ pair 跳过 + warning（消息含卷名与 qid），卷内序保留原始位置', () => {
+    const result = runDbStage({ productsDir: errorProducts, version: 1 })
+    const warnings = result.issues.filter((entry) => entry.code === 'paper_question_skipped')
+    // 门控 800101（卷一）与 800103（卷二）→ 各一条 warning
+    expect(warnings).toHaveLength(2)
+    expect(warnings.every((entry) => entry.severity === 'warning')).toBe(true)
+    expect(warnings.map((entry) => entry.qid).sort()).toEqual(['800101', '800103'])
+    expect(warnings.every((entry) => entry.file === 'papers.json')).toBe(true)
+    expect(warnings.every((entry) => /试卷「虚构错误卷[一二]」/.test(entry.message))).toBe(true)
+    expect(warnings.every((entry) => entry.message.includes(entry.qid ?? ''))).toBe(true)
+
+    const db = createDb()
+    db.exec(result.sql)
+    // papers 6 卷全量 upsert；pair = 可解析归属 6（800102/800105 双卷恢复 ×2 + 800203/800401）
+    expect(result.stats.papers).toBe(6)
+    expect(result.stats.questionPapers).toBe(6)
+    // 卷一 800102 保留原始卷内序 2（被门控的 800101 留空隙，保真实卷序）
+    const pair = rows<{ sequence: number }>(
+      db,
+      `SELECT qp.sequence FROM question_papers qp
+       JOIN papers p ON p.id = qp.paper_id
+       JOIN questions q ON q.id = qp.question_id
+       WHERE p.name='虚构错误卷一' AND q.qid='800102'`,
+    )
+    expect(pair).toEqual([{ sequence: 2 }])
+    // 卷一被门控的 800101 无 pair；卷二被门控的 800103 无 pair
+    expect(
+      rows(db, `SELECT COUNT(*) AS n FROM question_papers qp JOIN questions q ON q.id=qp.question_id WHERE q.qid IN ('800101','800103')`),
+    ).toEqual([{ n: 0 }])
+    // papers.question_count = 实际写入 pair 数（卷一 1、卷二 1，均低于原始归属数）
+    const counts = rows<{ name: string; question_count: number }>(
+      db,
+      "SELECT name, question_count FROM papers WHERE name IN ('虚构错误卷一','虚构错误卷二') ORDER BY name",
+    )
+    expect(counts).toEqual([
+      { name: '虚构错误卷一', question_count: 1 },
+      { name: '虚构错误卷二', question_count: 1 },
+    ])
+    db.close()
+
+    // --force：门控题目全量入库 → 归属恢复 8 pair（卷一 2 + 卷二 2），无 warning
+    const forced = runDbStage({ productsDir: errorProducts, version: 1, force: true })
+    expect(forced.issues).toEqual([])
+    expect(forced.stats.questionPapers).toBe(8)
+    expect(forced.stats.papers).toBe(6)
+  })
+})
+
+describe('孤儿归属清理（镜像题组清理，先 pair 后 paper）', () => {
+  it('重跑清除：不在产物集合的卷与 pair、卷内过期 pair 均删除，集合内的不受影响', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    // 人为注入陈旧行：整卷过期（虚构陈旧卷 + 其 pair）、甲卷上不在其 qid 集合的过期 pair
+    db.exec(
+      "INSERT INTO papers (name, year, region, paper_type, question_count) VALUES ('虚构陈旧卷', NULL, NULL, NULL, 1)",
+    )
+    db.exec(
+      `INSERT INTO question_papers (paper_id, question_id, sequence) VALUES ((SELECT id FROM papers WHERE name='虚构陈旧卷'), (SELECT id FROM questions WHERE qid='900101'), 1)`,
+    )
+    db.exec(
+      `INSERT INTO question_papers (paper_id, question_id, sequence) VALUES ((SELECT id FROM papers WHERE name='2024年某省公务员录用考试《行测》题（虚构甲卷）'), (SELECT id FROM questions WHERE qid='900601'), 99)`,
+    )
+
+    db.exec(result.sql) // 同产物重跑 → 孤儿清理回收陈旧行
+
+    expect(rows<{ n: number }>(db, "SELECT COUNT(*) AS n FROM papers WHERE name='虚构陈旧卷'")).toEqual([{ n: 0 }])
+    expect(
+      rows(
+        db,
+        `SELECT COUNT(*) AS n FROM question_papers qp JOIN papers p ON p.id=qp.paper_id WHERE p.name='虚构陈旧卷'`,
+      ),
+    ).toEqual([{ n: 0 }])
+    expect(
+      rows(
+        db,
+        `SELECT COUNT(*) AS n FROM question_papers qp
+         JOIN papers p ON p.id=qp.paper_id
+         JOIN questions q ON q.id=qp.question_id
+         WHERE p.name='2024年某省公务员录用考试《行测》题（虚构甲卷）' AND q.qid='900601'`,
+      ),
+    ).toEqual([{ n: 0 }])
+    // 合法 pair 总数回落到 12（本次产物写入集合），甲卷自身 pair 与卷内序完好
+    expect(rows<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM question_papers')).toEqual([{ n: 12 }])
+    const jiawuan = rows<{ qid: string; sequence: number }>(
+      db,
+      `SELECT q.qid AS qid, qp.sequence AS sequence FROM question_papers qp
+       JOIN papers p ON p.id=qp.paper_id
+       JOIN questions q ON q.id=qp.question_id
+       WHERE p.name='2024年某省公务员录用考试《行测》题（虚构甲卷）'
+       ORDER BY qp.sequence`,
+    )
+    expect(jiawuan).toEqual([
+      { qid: '900101', sequence: 1 },
+      { qid: '900102', sequence: 2 },
+    ])
+    db.close()
   })
 })
 
@@ -379,7 +594,14 @@ describe('图片统计（stats.images 做实：进 SQL 的 image 段 path 去重
     })
     expect(sourceToKey.size).toBe(13)
     const result = runDbStage({ productsDir: keyed, version: 2 })
-    expect(result.stats).toEqual({ questions: 12, questionGroups: 3, images: 12, knowledgePoints: 0 })
+    expect(result.stats).toEqual({
+      questions: 12,
+      questionGroups: 3,
+      images: 12,
+      knowledgePoints: 0,
+      papers: 7,
+      questionPapers: 12,
+    })
     expect(result.sql).toContain('"images":12')
     // 行级抽查：题干 JSON 列里确实已是 img/ 键形态（stem 列含 img/ 前缀路径）
     expect(result.sql).toContain('img/')
@@ -412,7 +634,7 @@ describe('SQL 字面量转义（夹具题干含 ASCII 分号/单引号/双引号
 })
 
 describe('产物结构无效（InvalidProductsError）', () => {
-  it('manifest 缺失 / 模块 JSON 损坏 → 抛 InvalidProductsError', () => {
+  it('manifest 缺失 / 模块 JSON 损坏 / papers.json 缺失或损坏 / 条目自洽性破坏 → 抛 InvalidProductsError', () => {
     const empty = path.join(outDir, 'empty-products')
     fs.mkdirSync(empty, { recursive: true })
     expect(() =>
@@ -424,6 +646,50 @@ describe('产物结构无效（InvalidProductsError）', () => {
     expect(() =>
       runDbStage({ productsDir: corrupt, version: 1 }),
     ).toThrow(InvalidProductsError)
+
+    // papers.json 缺失（T2-01a 前的旧产物）：paper_manifest_missing，强制先重新 parse
+    const stale = path.join(outDir, 'stale-products')
+    fs.rmSync(stale, { recursive: true, force: true })
+    fs.cpSync(cleanProducts, stale, { recursive: true })
+    fs.rmSync(resolveWithin(stale, 'papers.json'))
+    try {
+      runDbStage({ productsDir: stale, version: 1 })
+      throw new Error('papers.json 缺失应抛 InvalidProductsError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(InvalidProductsError)
+      expect(err instanceof Error ? err.message : String(err)).toContain('paper_manifest_missing')
+    }
+
+    // papers.json 损坏 / questionCount 与 qids 长度不一致 / 重名条目
+    fs.writeFileSync(path.join(stale, 'papers.json'), '{oops', 'utf8')
+    expect(() => runDbStage({ productsDir: stale, version: 1 })).toThrow(InvalidProductsError)
+    const mismatch = path.join(outDir, 'count-mismatch-products')
+    fs.rmSync(mismatch, { recursive: true, force: true })
+    fs.cpSync(cleanProducts, mismatch, { recursive: true })
+    fs.writeFileSync(
+      path.join(mismatch, 'papers.json'),
+      `${JSON.stringify({ papers: [{ name: 'X', year: null, region: null, paperType: null, questionCount: 3, qids: ['1', '2'] }] }, null, 2)}\n`,
+      'utf8',
+    )
+    expect(() => runDbStage({ productsDir: mismatch, version: 1 })).toThrow(InvalidProductsError)
+    const duplicated = path.join(outDir, 'dup-name-products')
+    fs.rmSync(duplicated, { recursive: true, force: true })
+    fs.cpSync(cleanProducts, duplicated, { recursive: true })
+    fs.writeFileSync(
+      path.join(duplicated, 'papers.json'),
+      `${JSON.stringify(
+        {
+          papers: [
+            { name: 'X', year: null, region: null, paperType: null, questionCount: 1, qids: ['1'] },
+            { name: 'X', year: null, region: null, paperType: null, questionCount: 1, qids: ['2'] },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    )
+    expect(() => runDbStage({ productsDir: duplicated, version: 1 })).toThrow(InvalidProductsError)
   })
 })
 
@@ -451,9 +717,11 @@ describe('CLI db 子命令（main）', () => {
     expect(fs.readFileSync(sqlPath, 'utf8')).toContain('-- ncse 导入入库 SQL：version=3')
   })
 
-  it('error 产物默认 → 0（跳过质量问题题目不是失败）；产物结构无效 → 1', async () => {
+  it('error 产物默认 → 0（跳过质量问题题目不是失败）；产物结构无效 / papers.json 缺失 → 1', async () => {
     spyConsole()
     expect(await main(['db', '--products', errorProducts, '--version', '3'])).toBe(0)
     expect(await main(['db', '--products', path.join(outDir, 'empty-products'), '--version', '3'])).toBe(1)
+    // papers.json 缺失（paper_manifest_missing）：旧产物强制先重新 parse
+    expect(await main(['db', '--products', path.join(outDir, 'stale-products'), '--version', '3'])).toBe(1)
   })
 })

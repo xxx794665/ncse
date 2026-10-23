@@ -4,13 +4,21 @@
  *   a. 分类体系 upsert（exam_types/subjects/modules，id 一律标量子查询解析）；
  *   b. 题组 upsert（自然键 module_id + source_key；有效题为空的组不生成）；
  *   c. 题目 upsert（自然键 qid；题组题 group_id 经 source_key 子查询链接，独立题 NULL）；
- *   d. import_runs 行（version 幂等覆盖；input_digest 为 modules/*.json 内容指纹）；
- *   e. 孤儿题组清理（每个涉及模块一条，置于题目 upsert 之后）。
+ *   d. 试卷与归属 upsert（T2-01a/ADR-0012：papers 按 name 幂等 upsert、
+ *      question_papers 按 (paper_id, question_id) 幂等 upsert，双 id 均标量子
+ *      查询解析；qid 解析不到（题目被质量门跳过等）的 pair 跳过并记 warning 级
+ *      issue paper_question_skipped；papers.questionCount = 该卷实际写入 pair 数）；
+ *   e. import_runs 行（version 幂等覆盖；input_digest 为 modules/*.json 内容指纹）；
+ *   f. 孤儿题组清理（每个涉及模块一条）与孤儿归属清理（先 pair 后 paper，镜像
+ *      题组清理；pair 覆盖「paper 不在本次产物集合」与「(paper,question) 不在
+ *      本次写入集合」两类，不依赖 FK 级联）。
  * stats.images 口径（T1-05 阶段 B 做实）：实际进 SQL 的题目（题干/选项内容/解析）
  * 与题组（材料）富片段中 image 段 path 的去重集合大小——只统计不改 SQL 语句语义
  * （唯一文本变化是 import_runs 行 stats JSON 的 images 数值）。
  * 数据质量门：manifest.issues 中 severity 'error' 且命中 GATING_ISSUE_CODES 的题目
  * 默认不进 SQL（--force 覆盖）；跳过名单由本函数返回、CLI 负责报告。
+ * 试卷产物（T2-01a）：产物根 papers.json 必须存在（缺失 → InvalidProductsError，
+ * 问题码 paper_manifest_missing——旧产物不含试卷清单，强制先重新 parse）。
  * SQL 文本规范：字符串字面量仅做 ' → '' 转义；每条语句一行、以 ';' 结尾；
  * 时间一律 strftime 库端表达式；不含绝对路径与时间戳字面量；不写 BEGIN/COMMIT
  * （wrangler d1 execute 按文件分句执行，幂等 upsert 保证中断重跑自愈）。
@@ -22,7 +30,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { MODULE_FOLDERS, moduleFolderOfCode } from './modules.js'
 import { resolveWithin } from './pipeline.js'
-import type { DbStageOptions, DbStageResult, DbStageStats, ModuleCode } from './types.js'
+import type {
+  DbStageOptions,
+  DbStageResult,
+  DbStageStats,
+  ImportIssue,
+  ModuleCode,
+} from './types.js'
 
 /** 产物结构无效（manifest 缺失/损坏、模块 JSON 损坏等；CLI 转退出码 1） */
 export class InvalidProductsError extends Error {
@@ -82,6 +96,16 @@ interface DbPaper {
   region: string | null
   paperType: string | null
   items: Array<DbQuestion | DbGroup>
+}
+
+/** papers.json 试卷条目（入库消费切片；questionCount 与 qids 长度一致性由读取器校验） */
+interface DbPaperProduct {
+  name: string
+  year: number | null
+  region: string | null
+  paperType: string | null
+  questionCount: number
+  qids: string[]
 }
 
 /** isDbQuestion 类型守卫（items 平铺混排，与解析产物同构） */
@@ -167,6 +191,47 @@ function readModuleProduct(productsRoot: string, code: ModuleCode): ModuleProduc
   const papersValue = expectArray(root['papers'], `${where} 的 papers 字段`)
   const papers = papersValue.map((paper, index) => validatePaper(paper, `${where} papers[${index}]`))
   return { text, papers }
+}
+
+/** 读产物根 papers.json 并校验入库消费结构（T2-01a/ADR-0012；读取模式参照 image-stage） */
+function readPaperProducts(productsRoot: string): DbPaperProduct[] {
+  const where = 'papers.json'
+  const papersPath = resolveWithin(productsRoot, where)
+  if (!fs.existsSync(papersPath)) {
+    // 旧产物（T2-01a 前）不含试卷归属清单：问题码 paper_manifest_missing，CLI 转退出码 1，
+    // 强制先重新 parse（归属产物与 modules/*.json 同批生成，重跑即恢复）
+    throw new InvalidProductsError(
+      `${where} 缺失（paper_manifest_missing）：旧产物不含试卷归属清单，需重新运行 parse 后再入库`,
+    )
+  }
+  const root = asRecord(parseJsonText(readTextFile(papersPath, where), where), where)
+  const papersValue = expectArray(root['papers'], `${where} 的 papers 字段`)
+  const papers = papersValue.map((paper, index) => {
+    const entryWhere = `${where} papers[${index}]`
+    const record = asRecord(paper, entryWhere)
+    return {
+      name: expectString(record['name'], `${entryWhere} 的 name 字段`),
+      year: expectNumberOrNull(record['year'], `${entryWhere} 的 year 字段`),
+      region: expectStringOrNull(record['region'], `${entryWhere} 的 region 字段`),
+      paperType: expectStringOrNull(record['paperType'], `${entryWhere} 的 paperType 字段`),
+      questionCount: expectNumber(record['questionCount'], `${entryWhere} 的 questionCount 字段`),
+      qids: expectStringArray(record['qids'], `${entryWhere} 的 qids 字段`),
+    }
+  })
+  const seenNames = new Set<string>()
+  for (let index = 0; index < papers.length; index++) {
+    const paper = papers[index]
+    if (paper.questionCount !== paper.qids.length) {
+      throw new InvalidProductsError(
+        `papers.json papers[${index}] 的 questionCount 与 qids 长度不一致（name=${paper.name}）`,
+      )
+    }
+    if (seenNames.has(paper.name)) {
+      throw new InvalidProductsError(`papers.json 存在重名试卷条目（聚合键失效）：${paper.name}`)
+    }
+    seenNames.add(paper.name)
+  }
+  return papers
 }
 
 /** 校验试卷结构（file/items 必需，来源元数据可空） */
@@ -266,6 +331,16 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function issue(
+  severity: ImportIssue['severity'],
+  code: string,
+  file: string,
+  qid: string | null,
+  message: string,
+): ImportIssue {
+  return { severity, code, file, qid, message }
+}
+
 /* ============ SQL 字面量与语句构造（全部单行、以 ';' 结尾） ============ */
 
 /** 字符串字面量：' → '' 标准转义（中文内容含引号/分号/换行均安全，换行已在 JSON 序列化中转义） */
@@ -333,16 +408,52 @@ function importRunUpsert(version: number, inputDigest: string, stats: DbStageSta
   return `INSERT INTO import_runs (version, status, input_digest, stats, finished_at) VALUES (${version}, 'success', ${sqlString(inputDigest)}, ${sqlJson(stats)}, ${now}) ON CONFLICT(version) DO UPDATE SET status='success', input_digest=excluded.input_digest, stats=excluded.stats, finished_at=${now}, ${UPDATED_AT}`
 }
 
+/** d. 试卷 upsert（唯一键 name 全列幂等；questionCount = 该卷实际写入 pair 数，非原始 qids 长度） */
+function paperUpsert(paper: DbPaperProduct, questionCount: number): string {
+  return `INSERT INTO papers (name, year, region, paper_type, question_count) VALUES (${sqlString(paper.name)}, ${sqlNullableInteger(paper.year)}, ${sqlNullableString(paper.region)}, ${sqlNullableString(paper.paperType)}, ${questionCount}) ON CONFLICT(name) DO UPDATE SET year=excluded.year, region=excluded.region, paper_type=excluded.paper_type, question_count=excluded.question_count, ${UPDATED_AT}`
+}
+
+/** d. 归属 pair upsert（唯一键 paper_id+question_id；双 id 均标量子查询解析，与题目挂题组同模式；sequence = 卷内 qid 原始序 1 起，pair 被跳过时留空隙保真实卷序） */
+function questionPaperUpsert(paperName: string, qid: string, sequence: number): string {
+  return `INSERT INTO question_papers (paper_id, question_id, sequence) VALUES ((SELECT id FROM papers WHERE name=${sqlString(paperName)}), (SELECT id FROM questions WHERE qid=${sqlString(qid)}), ${sequence}) ON CONFLICT(paper_id, question_id) DO UPDATE SET sequence=excluded.sequence`
+}
+
 /** e. 孤儿题组清理：模块内无 questions 引用的组删除（再蒸馏换组后的旧组回收） */
 function orphanGroupDelete(code: ModuleCode): string {
   return `DELETE FROM question_groups WHERE module_id=${moduleIdExpr(code)} AND NOT EXISTS (SELECT 1 FROM questions WHERE questions.group_id = question_groups.id)`
 }
 
+/** f. 孤儿归属清理（一）：paper 不在本次产物集合的 pair 删除（先 pair 后 paper 的第一步） */
+function orphanPaperPairDelete(paperNames: string[]): string {
+  const nameList = paperNames.map(sqlString).join(', ')
+  return `DELETE FROM question_papers WHERE paper_id IN (SELECT id FROM papers WHERE name NOT IN (${nameList}))`
+}
+
+/**
+ * f. 孤儿归属清理（二）：卷内 (paper,question) 不在本次写入集合的 pair 删除
+ * （qid 集为空时 NOT IN 不可表达，退化为删该卷全部 pair——本次未写入任何 pair 的卷正应如此）。
+ */
+function orphanQuestionPaperPairDelete(paper: DbPaperProduct, resolvableQids: string[]): string {
+  const paperId = `(SELECT id FROM papers WHERE name=${sqlString(paper.name)})`
+  if (resolvableQids.length === 0) {
+    return `DELETE FROM question_papers WHERE paper_id=${paperId}`
+  }
+  const qidList = resolvableQids.map(sqlString).join(', ')
+  return `DELETE FROM question_papers WHERE paper_id=${paperId} AND question_id NOT IN (SELECT id FROM questions WHERE qid IN (${qidList}))`
+}
+
+/** f. 孤儿归属清理（三）：不在本次产物集合的卷删除（镜像题组清理；先 pair 后 paper） */
+function orphanPaperDelete(paperNames: string[]): string {
+  const nameList = paperNames.map(sqlString).join(', ')
+  return `DELETE FROM papers WHERE name NOT IN (${nameList})`
+}
+
 /* ============ 编排 ============ */
 
 /**
- * 执行一次入库阶段：读产物 → 质量门 → 生成 SQL → 写文件。
- * SQL 与统计对同产物 + 同 version 逐字节确定；跳过名单按 issues 首见序返回。
+ * 执行一次入库阶段：读产物（manifest / modules / papers.json）→ 质量门 → 生成 SQL → 写文件。
+ * SQL 与统计对同产物 + 同 version 逐字节确定；跳过名单按 issues 首见序返回；
+ * 归属跳过（paper_question_skipped）按 卷序 → qid 序 收集为 warning 级 issues 返回。
  */
 export function runDbStage(options: DbStageOptions): DbStageResult {
   const productsRoot = path.resolve(options.productsDir)
@@ -373,6 +484,9 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
     moduleTexts.push(product.text)
   }
   const inputDigest = crypto.createHash('sha256').update(moduleTexts.join(''), 'utf8').digest('hex')
+
+  // ---- 试卷归属产物（T2-01a/ADR-0012）：缺失 → InvalidProductsError（paper_manifest_missing） ----
+  const paperProducts = readPaperProducts(productsRoot)
 
   // ---- SQL 语句序（顺序固定，见文件头注释 a→e） ----
   const statements: string[] = []
@@ -405,11 +519,14 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
 
   // c. 题目 upsert（moduleOrder → 卷序 → 文件内出现序）；组未生成的题按独立题处理（group_id NULL）
   let questions = 0
+  /** 实际进 SQL 的题目 qid 集合（归属 pair 的解析依据：不在集合中的 qid → paper_question_skipped） */
+  const includedQids = new Set<string>()
   for (const code of moduleCodes) {
     for (const paper of papersByCode.get(code) ?? []) {
       for (const item of paper.items) {
         if (!isDbQuestion(item) || skipped.has(item.qid)) continue
         statements.push(questionUpsert(code, paper, item, groupOfQid.get(item.qid)))
+        includedQids.add(item.qid)
         questions++
         collectImagePaths(item.stem, imagePaths)
         if (Array.isArray(item.options)) {
@@ -423,18 +540,63 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
     }
   }
 
+  // ---- 试卷与归属 pair（题目 upsert 之后、import_runs 之前；卷序 = papers.json 首遇序，
+  //      qid 序 = 卷内原始序；qid 解析不到（质量门跳过等）的 pair 跳过并记 warning） ----
+  const issues: ImportIssue[] = []
+  let questionPapers = 0
+  /** 每卷实际可解析 qid（papers.questionCount 与孤儿 pair 清理的写入集合口径） */
+  const resolvableQidsOfPaper: string[][] = []
+  for (const paper of paperProducts) {
+    const resolvable = paper.qids.filter((qid) => includedQids.has(qid))
+    resolvableQidsOfPaper.push(resolvable)
+    for (const qid of paper.qids) {
+      if (includedQids.has(qid)) continue
+      issues.push(
+        issue(
+          'warning',
+          'paper_question_skipped',
+          'papers.json',
+          qid,
+          `试卷「${paper.name}」的题目 qid=${qid} 未入库（被质量门跳过或不在模块产物中），归属 pair 跳过`,
+        ),
+      )
+    }
+    statements.push(paperUpsert(paper, resolvable.length))
+    for (let index = 0; index < paper.qids.length; index++) {
+      const qid = paper.qids[index]
+      if (!includedQids.has(qid)) continue
+      statements.push(questionPaperUpsert(paper.name, qid, index + 1))
+      questionPapers++
+    }
+  }
+
   // d. import_runs 行（实际导入统计；images 为进 SQL 的图片段 path 去重计数，knowledgePoints 恒 0）
   const stats: DbStageStats = {
     questions,
     questionGroups,
     images: imagePaths.size,
     knowledgePoints: 0,
+    papers: paperProducts.length,
+    questionPapers,
   }
   statements.push(importRunUpsert(options.version, inputDigest, stats))
 
   // e. 孤儿题组清理（每个涉及模块一条，置于题目 upsert 之后）
   for (const code of moduleCodes) {
     statements.push(orphanGroupDelete(code))
+  }
+
+  // f. 孤儿归属清理（镜像题组清理；先 pair 后 paper；产物集合为空时全表清空——
+  //    NOT IN 空集不可表达，且本次产物确实不含任何卷/pair）
+  if (paperProducts.length === 0) {
+    statements.push('DELETE FROM question_papers', 'DELETE FROM papers')
+  } else {
+    const paperNames = paperProducts.map((paper) => paper.name)
+    statements.push(orphanPaperPairDelete(paperNames))
+    for (let index = 0; index < paperProducts.length; index++) {
+      statements.push(orphanQuestionPaperPairDelete(paperProducts[index], resolvableQidsOfPaper[index]))
+    }
+    statements.push(orphanPaperDelete(paperNames))
   }
 
   // ---- 拼装与写出（SQL 固定写回产物目录 import.sql：产物目录即管线工件区，
@@ -445,5 +607,5 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
   const sqlPath = resolveWithin(productsRoot, 'import.sql')
   fs.writeFileSync(sqlPath, sql, 'utf8')
 
-  return { sql, sqlPath, skippedQids, stats, inputDigest }
+  return { sql, sqlPath, skippedQids, stats, inputDigest, issues }
 }

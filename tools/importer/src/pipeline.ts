@@ -2,6 +2,9 @@
  * 导入编排：扫描输入目录 → 逐文件解析 → 全局 qid 去重 → 汇总统计 → 写 JSON 产物。
  * 幂等与确定性：同输入目录 + 同版本号 → 逐字节相同输出（不写时间戳等不确定值；
  * 排序固定为 模块序(01→06) → 文件名序(JS 码元序) → 文件内出现序）。
+ * 试卷归属产物 papers.json（T2-01a/ADR-0012）：记录每份卷的完整原始归属（含被
+ * 全局去重丢弃的联考同题，按卷名跨模块聚合）；modules/*.json 结构一字节不动
+ * （images/vision 阶段与 vision 内容寻址缓存依赖其结构）。
  * 题库数据不入 Git 仓库（ADR-0004）：产物目录由调用方保证已忽略（默认 .import-out/）。
  */
 import fs from 'node:fs'
@@ -16,6 +19,7 @@ import type {
   ParsedGroup,
   ParsedPaper,
   ParsedQuestion,
+  PapersManifest,
   RunImportResult,
 } from './types.js'
 
@@ -55,6 +59,18 @@ function isQuestion(item: ParsedQuestion | ParsedGroup): item is ParsedQuestion 
   return 'qid' in item
 }
 
+/** 试卷归属累计器（papers.json 条目的可变构建形态；跨模块同名卷聚合为一条） */
+interface PaperAccumulator {
+  name: string
+  year: number | null
+  region: string | null
+  paperType: string | null
+  /** 卷内全部题目 qid（首遇序：模块目录序 → 文件名序 → 文件内 items 序） */
+  qids: string[]
+  /** 卷内 qid 首见集合（同卷内 qid 重复只记首见） */
+  qidSet: Set<string>
+}
+
 /** 输入目录内相对路径 → 模块 code（未登记目录返回 undefined） */
 function moduleOfFile(file: string): ModuleCode | undefined {
   return moduleCodeOfFolder(file.split('/')[0] ?? '')
@@ -72,6 +88,8 @@ export function runImport(options: RunImportOptions): RunImportResult {
   const filesByModule = new Map<ModuleCode, number>()
   /** qid → 首见文件（全局去重依据；qid 为全库唯一自然键） */
   const seenQids = new Map<string, string>()
+  /** 卷名 → 归属累计器（试卷实体聚合键 = 卷名，T2-01a/ADR-0012） */
+  const paperProducts = new Map<string, PaperAccumulator>()
 
   for (const moduleFolder of MODULE_FOLDERS) {
     const moduleDir = resolveWithin(inputAbs, moduleFolder.folder)
@@ -111,7 +129,8 @@ export function runImport(options: RunImportOptions): RunImportResult {
       })
       issues.push(...fileIssues)
       if (paper === null) continue
-      dropDuplicateQids(paper, issues, seenQids)
+      const paperProduct = accumulatePaper(paperProducts, paper)
+      dropDuplicateQids(paper, issues, seenQids, paperProduct)
       const list = papersByModule.get(moduleFolder.code) ?? []
       list.push(paper)
       papersByModule.set(moduleFolder.code, list)
@@ -176,7 +195,8 @@ export function runImport(options: RunImportOptions): RunImportResult {
     issues,
   }
 
-  // ---- 产物写出（先清空旧 modules/*.json，实现同目录重跑的干净覆盖） ----
+  // ---- 产物写出（先清空旧 modules/*.json，实现同目录重跑的干净覆盖；
+  //      papers.json 于产物根无条件重写，旧文件不会残留） ----
   const modulesDir = resolveWithin(outputAbs, 'modules')
   fs.mkdirSync(modulesDir, { recursive: true })
   for (const stale of fs.existsSync(modulesDir) ? fs.readdirSync(modulesDir) : []) {
@@ -194,21 +214,71 @@ export function runImport(options: RunImportOptions): RunImportResult {
     wrote.push(modulePath)
   }
 
-  return { manifest, hardErrors: totalStat.errors, wrote }
+  // ---- papers.json：试卷完整原始归属（ADR-0012；首遇序 = 模块目录序 → 文件名序，
+  //      与 modules/*.json 的确定性排序口径一致） ----
+  const papersManifest: PapersManifest = {
+    papers: [...paperProducts.values()].map((paper) => ({
+      name: paper.name,
+      year: paper.year,
+      region: paper.region,
+      paperType: paper.paperType,
+      questionCount: paper.qids.length,
+      qids: paper.qids,
+    })),
+  }
+  const papersPath = resolveWithin(outputAbs, 'papers.json')
+  fs.writeFileSync(papersPath, serializeJson(papersManifest), 'utf8')
+  wrote.push(papersPath)
+
+  return { manifest, hardErrors: totalStat.errors, wrote, paperCount: papersManifest.papers.length }
+}
+
+/**
+ * 卷归属累计：跨模块同名卷聚合为同一试卷实体（聚合键 = 卷名，ADR-0012）；
+ * 来源元数据取跨模块文件首个非空值（确定性：模块目录序 → 文件名序）。
+ */
+function accumulatePaper(
+  paperProducts: Map<string, PaperAccumulator>,
+  paper: ParsedPaper,
+): PaperAccumulator {
+  const existing = paperProducts.get(paper.name)
+  if (existing !== undefined) {
+    if (existing.year === null && paper.year !== null) existing.year = paper.year
+    if (existing.region === null && paper.region !== null) existing.region = paper.region
+    if (existing.paperType === null && paper.paperType !== null) existing.paperType = paper.paperType
+    return existing
+  }
+  const created: PaperAccumulator = {
+    name: paper.name,
+    year: paper.year,
+    region: paper.region,
+    paperType: paper.paperType,
+    qids: [],
+    qidSet: new Set(),
+  }
+  paperProducts.set(paper.name, created)
+  return created
 }
 
 /**
  * 全局 qid 去重：保留首见、丢弃后见并记入问题清单（不静默丢弃）；
  * 题组 questionQids 引用同步清除被丢弃的小题。
+ * 卷归属记录（ADR-0012）：首见与被丢弃的后见都记 (当前卷, qid)——被丢弃的
+ * 联考同题归属由此保留在 papers.json；同卷内 qid 重复只记首见。
  */
 function dropDuplicateQids(
   paper: ParsedPaper,
   issues: ImportIssue[],
   seenQids: Map<string, string>,
+  paperProduct: PaperAccumulator,
 ): void {
   const dropped = new Set<string>()
   paper.items = paper.items.filter((item) => {
     if (!isQuestion(item)) return true
+    if (!paperProduct.qidSet.has(item.qid)) {
+      paperProduct.qidSet.add(item.qid)
+      paperProduct.qids.push(item.qid)
+    }
     const firstSeen = seenQids.get(item.qid)
     if (firstSeen === undefined) {
       seenQids.set(item.qid, paper.file)

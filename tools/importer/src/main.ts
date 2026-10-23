@@ -1,9 +1,11 @@
 /**
  * @ncse/importer CLI 入口（T1-04 文本导入；T1-15 增 db 入库子命令；T1-05 增 images
- * 图片子命令；T1-06 增 vision 视觉提取子命令）。
+ * 图片子命令；T1-06 增 vision 视觉提取子命令；T2-01a parse 产物增 papers.json
+ * 试卷归属清单、db 阶段随之入库 papers/question_papers）。
  * parse 模式：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
  * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
- * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库）
+ * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库；
+ * 产物须含 papers.json——旧产物不含该文件时报 paper_manifest_missing 退出 1，需重新 parse）
  * images 模式：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>]
  * [--bucket <R2 桶名>] [--local] [--concurrency <2-16 默认 4>]
  * （压缩工件写至 <产物目录>/r2/，模块 JSON 图片段 path 原位重写为内容寻址键，
@@ -20,8 +22,9 @@
  * 不进 pending）。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
- * db 0 = SQL 生成成功（含跳过质量问题题目）；1 = 产物结构无效（manifest 缺失/模块 JSON 损坏）；
- * 2 = 用法错误（缺参数、version 非正整数、products 目录不存在）。
+ * db 0 = SQL 生成成功（含跳过质量问题题目与归属 pair，均记 warning）；1 = 产物结构无效
+ * （manifest 缺失/模块 JSON 损坏/papers.json 缺失）；2 = 用法错误（缺参数、version 非正
+ * 整数、products 目录不存在）。
  * images 0 = 图片阶段成功（允许有 warning）；1 = 图片或上传统计存在 error 或产物结构无效；
  * 2 = 用法错误（缺参数、products/input 目录不存在、路径越界、--local/--concurrency
  * 无 --bucket、--concurrency 越界 2–16、wrangler 未安装、桶名或对象键不合规）。
@@ -147,7 +150,7 @@ function runParseCommand(argv: string[]): number {
   }
   const stats = result.manifest.stats
   console.log(
-    `导入完成：文件 ${stats.files}，试卷 ${stats.papers}，题目 ${stats.questions}，题组 ${stats.groups}`,
+    `导入完成：文件 ${stats.files}，试卷 ${stats.papers}，聚合试卷 ${result.paperCount}，题目 ${stats.questions}，题组 ${stats.groups}`,
   )
   console.log(`问题清单：错误 ${stats.errors}，警告 ${stats.warnings}（详见 import-manifest.json）`)
   console.log(`产物目录：${outputDir}`)
@@ -218,12 +221,21 @@ function runDbCommand(argv: string[]): number {
     throw err
   }
   console.log(`入库 SQL 已生成：${result.sqlPath}`)
-  console.log(`导入统计：题目 ${result.stats.questions}，题组 ${result.stats.questionGroups}`)
+  console.log(
+    `导入统计：题目 ${result.stats.questions}，题组 ${result.stats.questionGroups}，试卷 ${result.stats.papers}，归属 ${result.stats.questionPapers}`,
+  )
   if (result.skippedQids.length > 0) {
     console.error(
       `数据质量门：跳过题目 ${result.skippedQids.length} 道（--force 可强制导入，问题明细见 import-manifest.json）`,
     )
   }
+  // 归属跳过等 warning 级问题（paper_question_skipped）：不判失败，按上限打印，明细在返回值
+  for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {
+    const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
+    console.error(`[${entry.severity}] ${entry.file}${qid}：${entry.code} — ${entry.message}`)
+  }
+  const hiddenIssues = result.issues.length - PRINT_ISSUE_LIMIT
+  if (hiddenIssues > 0) console.error(`…另有 ${hiddenIssues} 条问题未打印`)
   return 0
 }
 

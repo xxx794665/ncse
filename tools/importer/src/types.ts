@@ -115,8 +115,38 @@ export interface RunImportResult {
   manifest: ImportManifest
   /** severity 'error' 的条数（>0 时 CLI 退出码 1） */
   hardErrors: number
-  /** 写出的产物文件（绝对路径） */
+  /** 写出的产物文件（绝对路径；含 papers.json） */
   wrote: string[]
+  /** papers.json 聚合卷数（按卷名去重后的试卷实体数，T2-01a/ADR-0012） */
+  paperCount: number
+}
+
+/* ============ 试卷归属产物（T2-01a/ADR-0012：parse 阶段输出 papers.json） ============ */
+
+/**
+ * papers.json 试卷条目：一份卷的完整原始归属（含与其他卷共享、被全局 qid 去重
+ * 丢弃的联考同题——归属信息独立于 modules/*.json 承载，后者结构一字节不动）。
+ * 聚合键 = name（跨模块同名 Markdown 为同一卷）；qids 按卷内首遇序
+ * （模块目录序 → 文件名序 → 文件内 items 序），同卷内 qid 重复只记首见。
+ */
+export interface PaperProduct {
+  /** 卷名（聚合键，全库唯一导入自然键） */
+  name: string
+  /** 年份（跨模块文件首个非空值；提取不出为 null） */
+  year: number | null
+  /** 地区（跨模块文件首个非空值；提取不出为 null） */
+  region: string | null
+  /** 卷型（跨模块文件首个非空值；提取不出为 null） */
+  paperType: string | null
+  /** 原始归属题数（= qids.length，含被全局去重丢弃的联考同题） */
+  questionCount: number
+  /** 卷内全部题目 qid（首遇序；含首见卷被丢弃的重复 qid） */
+  qids: string[]
+}
+
+/** papers.json 根结构（幂等：同输入 + 同版本号 → 逐字节相同；papers 为首遇序） */
+export interface PapersManifest {
+  papers: PaperProduct[]
 }
 
 /* ============ 入库阶段（T1-15：JSON 产物 → 确定性 SQL） ============ */
@@ -141,6 +171,10 @@ export interface DbStageStats {
   images: number
   /** 知识点入库数（打标任务实现，当前恒 0） */
   knowledgePoints: number
+  /** 试卷实体写入数（papers upsert 行数，T2-01a/ADR-0012） */
+  papers: number
+  /** 题目-试卷归属 pair 写入数（question_papers 行数；qid 解析不到的跳过不计） */
+  questionPapers: number
 }
 
 /** runDbStage 返回值（SQL 文本与写入信息，供测试断言） */
@@ -155,6 +189,8 @@ export interface DbStageResult {
   stats: DbStageStats
   /** 输入内容摘要（sha256 hex，modules/*.json 按 moduleOrder 拼接计算） */
   inputDigest: string
+  /** 入库阶段问题清单（warning 级归属跳过记录；收集序 = 卷序 → qid 序，确定性） */
+  issues: ImportIssue[]
 }
 
 /* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写；阶段 B 增 R2 上传） ============ */
