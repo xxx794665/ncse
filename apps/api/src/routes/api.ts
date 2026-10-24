@@ -3,6 +3,8 @@ import type { AppEnv } from '../types'
 import { authRoute } from './auth'
 import { favoritesRoute } from './favorites'
 import { imgRoute } from './img'
+import { mockRoute } from './mock'
+import { papersRoute } from './papers'
 import { practiceRoute } from './practice'
 import { statsRoute } from './stats'
 import { wrongBookRoute } from './wrong-book'
@@ -21,6 +23,10 @@ import { wrongBookRoute } from './wrong-book'
  *   幂等切换，全路由 requireAuth）；
  * - T1-11a（已落地）基础统计：statsRoute → /api/stats/*（GET /summary 练习统计汇总：
  *   overall/modules 全历史聚合 + daily 近 30 天北京日趋势，全路由 requireAuth）；
+ * - T2-01b（已落地）试卷目录：papersRoute → /api/papers/*（GET / 全量卷目录，
+ *   完整度分档 D2，全路由 requireAuth）；
+ * - T2-01b（已落地）整卷模拟·模考会话：mockRoute → /api/mock/*（建会话/列表/详情，
+ *   时长锁定 D3、作答中不下发答案 D4、计时累计 D6，全路由 requireAuth；作答/交卷端点为后续片）；
  * - AI 代理（ADR-0005）：aiRoute → /api/ai/*（申论批改、AI 参考答案等 POST 转发）；
  * - 题库、做题记录等其余业务域：按任务进展追加。
  */
@@ -43,3 +49,9 @@ apiRoute.route('/img', imgRoute)
 
 // 统计域：全端点 requireAuth（子路由内部 use），汇总口径（全历史 + 近 30 天北京日）见 statsRoute 文件头
 apiRoute.route('/stats', statsRoute)
+
+// 试卷目录域：全端点 requireAuth（子路由内部 use），完整度分档口径（D2）见 papersRoute 文件头
+apiRoute.route('/papers', papersRoute)
+
+// 整卷模拟·模考会话域：全端点 requireAuth（子路由内部 use），拆片决策（D3/D4/D6/D7）见 mockRoute 文件头
+apiRoute.route('/mock', mockRoute)

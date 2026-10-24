@@ -2,11 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { and, asc, countDistinct, desc, eq, inArray, notExists, sql } from 'drizzle-orm'
-import {
-  DEFAULT_BLUEPRINT,
-  deriveQuestionTimeLimit,
-  IMAGE_KEY_PATTERN,
-} from '@ncse/shared'
+import { DEFAULT_BLUEPRINT, deriveQuestionTimeLimit } from '@ncse/shared'
 import type {
   PracticeQuestionDto,
   PracticeSessionDetail,
@@ -23,6 +19,7 @@ import type {
 import { createDb, type DbClient } from '../db'
 import { modules, practiceRecords, practiceSessions, questions, wrongBook } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
+import { projectRichContent } from './rich-content-project'
 import type { AppEnv } from '../types'
 
 /**
@@ -259,22 +256,8 @@ async function fetchLatestRecordsByQuestion(
   return map
 }
 
-/**
- * 图片段 path 投影：仅 KEYED 形态（shared IMAGE_KEY_PATTERN，与 img 端点键校验共用，勿单方改）
- * 拼为 /api/img 绝对 URL，其余（源相对路径等历史数据）原样保留，防误构造。
- */
-function projectImagePath(path: string, requestUrl: string): string {
-  return IMAGE_KEY_PATTERN.test(path) ? new URL(`/api/img/${path}`, requestUrl).href : path
-}
-
-/** RichContent 投影：text 段原样，image 段按 KEYED 形态投影 path（纯函数，返回新数组不改库读出对象） */
-function projectRichContent(content: RichContent, requestUrl: string): RichContent {
-  return content.map((segment) =>
-    segment.type === 'image' ? { ...segment, path: projectImagePath(segment.path, requestUrl) } : segment,
-  )
-}
-
-/** 题目行 → PracticeQuestionDto 列表：序 = questionIds 序，answered 挂续做回显（无记录 null） */
+/** 题目行 → PracticeQuestionDto 列表：序 = questionIds 序，answered 挂续做回显（无记录 null）；
+ * 图片段投影复用共享 rich-content-project.ts（T2-01b 抽出，练习与模考两域共用） */
 function toQuestionDtos(
   questionIds: number[],
   questionRows: Map<number, QuestionRow>,
