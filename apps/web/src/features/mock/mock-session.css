@@ -1,0 +1,500 @@
+/* 整卷模考·作答页（T2-01d）：顶栏（总倒计时徽章）+ 进度行 + 单题作答 + 答题卡（PC 侧栏 / 移动弹层）
+   + 交卷确认弹窗 + 交卷完成态 + 加载骨架/错误态
+   移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
+   字面量均为规范定值：图标 16/20（§5 行内/按钮导航档）、答题卡数字钮 44（§7.1 触摸热区定值，
+   同 session.css 先例）、焦点环 2px（§6.1）、1px 边框（例外）；宽用百分比（数据驱动，同先例） */
+
+/* ===== 页面容器 =====
+   根不设阅读宽上限：PC 为「阅读列（≤--layout-max-reading）+ 答题卡侧栏」双栏，宽度由 __layout 栅格控制 */
+.mock-session__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacing-lg);
+  /* 单栏（移动/平板）：阅读流收窄并居中（§3.3 阅读层次，同 practice 作答页） */
+  max-width: var(--layout-max-reading);
+  margin: 0 auto;
+}
+
+@media (min-width: 1024px) {
+  .mock-session__layout {
+    /* 双栏：主列封顶阅读最大宽，答题卡列取内容固有宽（数字钮 44px × 5 列），整体居中 */
+    grid-template-columns: minmax(0, var(--layout-max-reading)) auto;
+    justify-content: center;
+    align-items: start;
+    gap: var(--spacing-xl);
+    max-width: none;
+  }
+}
+
+/* grid item 自动最小尺寸取内容 min-content（长题干/长选项会撑破列宽），min-width:0 后列宽才真正生效（T2-01c 同款教训） */
+.mock-session__main,
+.mock-session__aside {
+  min-width: 0;
+}
+
+/* ===== 顶栏 ===== */
+
+.mock-session__topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.mock-session__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+}
+
+.mock-session__back:hover {
+  color: var(--color-text-primary);
+}
+
+.mock-session__back:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* 返回入口图标 20px（§5 导航/按钮档） */
+.mock-session__back > svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 卷名占满剩余空间，把状态 Tag 与倒计时徽章挤到行尾；长卷名单行省略 */
+.mock-session__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+/* 行尾定宽件不挤压卷名；色调切换仅过渡颜色（muted → warning → danger 递进，态翻转瞬间完成） */
+.mock-session__timer {
+  flex-shrink: 0;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+/* 倒计时数字：mono + tabular-nums（§3.1），逐秒跳动不抖 */
+.mock-session__timer-value {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 进度行（形态同 practice 作答页/卷选页会话卡进度条） ===== */
+
+.mock-session__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-lg);
+}
+
+.mock-session__progress-track {
+  flex: 1;
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.mock-session__progress-fill {
+  height: 100%;
+  background-color: var(--color-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--duration-normal) var(--easing-standard);
+}
+
+/* 进度数值：mono + tabular-nums（§3.1） */
+.mock-session__progress-text {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
+
+/* 移动端答题卡入口：PC（≥1024px）侧栏常驻后隐藏 */
+@media (min-width: 1024px) {
+  .mock-session__sheet-open {
+    display: none;
+  }
+}
+
+/* ===== 答题卡侧栏（PC 常驻） ===== */
+
+.mock-session__aside {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .mock-session__aside {
+    display: block;
+  }
+}
+
+/* 吸顶随滚：答题卡在长题面滚动时保持可见可跳 */
+.mock-session__sheet {
+  position: sticky;
+  top: var(--spacing-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+/* 侧栏头部已答计数：mono + tabular-nums（§3.1） */
+.mock-session__sheet-count {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
+
+/* 弹层 footer 的未答计数靠左（与交卷按钮分居两端；footer 基础布局为 flex-end） */
+.ncse-modal__footer .mock-session__sheet-count {
+  margin-right: auto;
+}
+
+/* 侧栏交卷按钮通栏 */
+.mock-session__sheet-submit {
+  width: 100%;
+}
+
+/* ===== 答题卡本体（侧栏与移动弹层共用） ===== */
+
+.mock-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.mock-sheet__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.mock-sheet__module {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+}
+
+/* 默认（移动弹层：容器有确定宽）：auto-fill 自适应列数，数字钮 44px 起 */
+.mock-sheet__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: var(--spacing-xs);
+}
+
+/* PC 侧栏（列取内容固有宽，auto-fill 无法解析）：固定 5 列 × 44px（§7.1 触摸热区定值） */
+.mock-session__sheet .mock-sheet__grid {
+  grid-template-columns: repeat(5, 44px);
+}
+
+/* 数字钮三态：未答=描边 / 已答=填充主色 / 当前题=焦点色高亮描边（1px 边框 + 1px 外环，边框定值例外） */
+.mock-sheet__cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-caption);
+  line-height: 1;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard),
+    box-shadow var(--duration-fast) var(--easing-standard);
+}
+
+.mock-sheet__cell:hover {
+  background-color: var(--color-bg-muted);
+}
+
+.mock-sheet__cell:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* 已答：主色填充（选中态口径同 §7.1 字母徽标填充主色文字白） */
+.mock-sheet__cell.is-answered {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+
+.mock-sheet__cell.is-answered:hover {
+  background-color: var(--color-primary-hover);
+}
+
+/* 当前题：焦点色高亮描边（叠在已答/未答之上） */
+.mock-sheet__cell.is-current {
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 1px var(--color-border-focus);
+}
+
+/* ===== 作答错误提示（danger-soft 条，§6.8 反馈件） ===== */
+
+.mock-session__answer-error {
+  margin: 0 0 var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 已交卷回看：选项本为空操作，去掉指针与悬停暗示（特异性压过 question-card.css 的
+   .ncse-option--default:not(:disabled):hover，不改组件库） */
+.mock-session__readonly .ncse-option {
+  cursor: default;
+}
+
+.mock-session__readonly .ncse-option.ncse-option--default:hover {
+  background-color: var(--color-bg-elevated);
+}
+
+/* ===== 底部导航 ===== */
+
+.mock-session__nav {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-md);
+}
+
+/* 「下一题」图标后置（Button 仅前置图标插槽，行内反转实现尾随箭头） */
+.mock-session__nav-next {
+  flex-direction: row-reverse;
+}
+
+/* ===== 交卷操作区 ===== */
+
+.mock-session__submitbar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+/* 交卷失败（含强制收卷失败）：danger-soft 提示条占满行宽 */
+.mock-session__submit-error {
+  align-self: stretch;
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 移动端主操作通栏（§6.1：lg 为移动端主操作档）；≥768px 恢复内容宽 */
+.mock-session__submit-btn {
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .mock-session__submit-btn {
+    width: auto;
+  }
+}
+
+/* ===== 交卷完成态 ===== */
+
+.mock-session-complete {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.mock-session-complete__head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+/* 功能入口图标 24px 档（§5），success 语义着色 */
+.mock-session-complete__icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  color: var(--color-success-text);
+}
+
+.mock-session-complete__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.mock-session-complete__desc {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.mock-session-complete__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.mock-session-complete__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+/* ===== 交卷确认弹窗 ===== */
+
+.mock-session-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+/* 交卷失败（如已交卷 400/网络）：danger-soft 提示条（保留弹窗供重试） */
+.mock-session-confirm__error {
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+.mock-session-confirm__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-primary);
+}
+
+/* ===== 加载错误态（提示条 + 重试/返回，practice 作答页模式） ===== */
+
+.mock-session-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.mock-session-error__text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+.mock-session-error__actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--spacing-xs);
+}
+
+/* ===== 加载骨架（§6.8：bg-muted 圆角块 + 呼吸动画；条高取所代表行的字号 token） ===== */
+
+.mock-session-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  max-width: var(--layout-max-reading);
+  margin: 0 auto;
+}
+
+.mock-session-skeleton__line {
+  height: var(--font-size-caption);
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-xs);
+  animation: mock-session-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+.mock-session-skeleton__line--bar {
+  width: 45%;
+  height: var(--font-size-title);
+}
+
+.mock-session-skeleton__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+@media (min-width: 1024px) {
+  .mock-session-skeleton__card {
+    padding: var(--spacing-lg);
+  }
+}
+
+.mock-session-skeleton__line--stem {
+  width: 70%;
+  height: var(--font-size-stem);
+  margin-bottom: var(--spacing-xs);
+}
+
+/* 选项块高取 §7.1 选项热区定值 44px */
+.mock-session-skeleton__option {
+  height: 44px;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-md);
+  animation: mock-session-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+@keyframes mock-session-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mock-session-skeleton__line,
+  .mock-session-skeleton__option {
+    animation: none;
+  }
+}

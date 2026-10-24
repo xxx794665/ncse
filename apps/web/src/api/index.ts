@@ -9,7 +9,15 @@ export {
   fetchPracticeSessionsApi,
   submitPracticeAnswerApi,
 } from './practice-api'
-export { createMockSessionApi, fetchMockSessionsApi, fetchPapersApi } from './mock-api'
+export {
+  createMockSessionApi,
+  fetchMockSessionApi,
+  fetchMockSessionsApi,
+  fetchPapersApi,
+  submitMockAnswerApi,
+  submitMockSessionApi,
+  updateMockTimerApi,
+} from './mock-api'
 export { disposeWrongBookApi, fetchWrongBookApi } from './wrong-book-api'
 export { addFavoriteApi, fetchFavoritesApi, removeFavoriteApi } from './favorites-api'
 export { fetchStatsSummaryApi } from './stats-api'
