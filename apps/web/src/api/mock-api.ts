@@ -1,13 +1,15 @@
 /**
- * 整卷模考域 API（T2-01c/T2-01d）：后端 T2-01b 试卷目录与模考会话端点的前端封装
+ * 整卷模考域 API（T2-01c/T2-01d/T2-01e）：后端 T2-01b 试卷目录与模考会话端点的前端封装
  * DTO 契约见 @ncse/shared（PaperSummary / MockSessionSummary / CreateMockSessionRequest /
- * MockSessionDetail / SubmitMockAnswerRequest / UpdateMockTimerRequest / MockSessionReport）；
+ * MockSessionDetail / SubmitMockAnswerRequest / UpdateMockTimerRequest / MockSessionReport /
+ * MockHistoryItem）；
  * 错误统一经 apiFetch 抛 ApiError（400 入参校验失败 / 404 试卷或会话不存在 /
  * 401 登录态失效走全局回调）
  */
 
 import type {
   CreateMockSessionRequest,
+  MockHistoryItem,
   MockSessionDetail,
   MockSessionReport,
   MockSessionSummary,
@@ -93,4 +95,22 @@ export function submitMockSessionApi(sessionId: number): Promise<MockSessionRepo
   return apiFetch<MockSessionReport>(`/api/mock/sessions/${String(sessionId)}/submit`, {
     method: 'POST',
   })
+}
+
+/**
+ * GET /api/mock/sessions/:id/report：成绩单回看（T2-01e；与交卷响应同型，全部从库重算）
+ * - submitted/abandoned 均可取；in_progress 400「会话未交卷」（成绩单只对已定卷会话有意义）
+ * - 404：会话不存在 / 非本人（防存在性探测）
+ */
+export function fetchMockReportApi(sessionId: number): Promise<MockSessionReport> {
+  return apiFetch<MockSessionReport>(`/api/mock/sessions/${String(sessionId)}/report`)
+}
+
+/**
+ * GET /api/mock/history：本人全部已交卷会话的概要列表（T2-01e，F2-4 历次成绩与纵向对比）
+ * - submittedAt 倒序（最近交卷在前）；abandoned 不入历史（未判分无成绩）
+ * - summary 六数口径与 MockSessionReport.summary 一致（已答 = 已判分行）
+ */
+export function fetchMockHistoryApi(): Promise<MockHistoryItem[]> {
+  return apiFetch<MockHistoryItem[]>('/api/mock/history')
 }

@@ -3,6 +3,7 @@
  * - 实页：/ 首页仪表盘骨架、/design 组件库演示、/login 登录、/register 注册（T1-16）、
  *   /practice 专项刷题模块选择（T1-08f）、/practice/sessions/:id 专项刷题作答（T1-08g）、
  *   /mock 整卷模考卷选（T2-01c）、/mock/sessions/:id 整卷模考作答（T2-01d）、
+ *   /mock/sessions/:id/report 整卷模考成绩单（T2-01e）、
  *   /review 错题/难点/收藏三视图（T1-10b）、/stats 基础统计（T1-11b）
  * - requiresAuth 路由（如 /practice）经 RequireAuth 守卫：restoring 加载态 / 匿名跳 /login
  * - 未实现功能按注册表统一渲染 EmptyPlaceholder（设计规范 §6.7）；未匹配路由 fallback NotFoundPage
@@ -20,6 +21,7 @@ import { RequireAuth } from './features/auth/require-auth'
 import { DesignDemoPage } from './features/design-demo/design-demo-page'
 import { HomePage } from './features/home/home-page'
 import { MockPage } from './features/mock/mock-page'
+import { MockReportPage } from './features/mock/mock-report-page'
 import { MockSessionPage } from './features/mock/mock-session-page'
 import { NotFoundPage, PlaceholderPage } from './features/placeholder/placeholder-page'
 import { PracticePage } from './features/practice/practice-page'
@@ -78,6 +80,16 @@ export function App() {
             }
             if (route.kind === 'mock-session') {
               const page = <MockSessionPage />
+              return (
+                <Route
+                  key={route.key}
+                  path={route.path}
+                  element={route.requiresAuth ? <RequireAuth>{page}</RequireAuth> : page}
+                />
+              )
+            }
+            if (route.kind === 'mock-report') {
+              const page = <MockReportPage />
               return (
                 <Route
                   key={route.key}

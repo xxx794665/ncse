@@ -11,6 +11,8 @@ export {
 } from './practice-api'
 export {
   createMockSessionApi,
+  fetchMockHistoryApi,
+  fetchMockReportApi,
   fetchMockSessionApi,
   fetchMockSessionsApi,
   fetchPapersApi,

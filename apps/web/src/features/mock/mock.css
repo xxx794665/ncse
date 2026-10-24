@@ -33,8 +33,9 @@
 
 .mock-section__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: var(--spacing-xs) var(--spacing-sm);
   margin-bottom: var(--spacing-md);
 }
 
@@ -44,6 +45,14 @@
   font-weight: var(--font-weight-semibold);
   line-height: var(--line-height-tight);
   color: var(--color-text-primary);
+}
+
+/* 区头汇总句（T2-01e 模考历史「共 N 次 · 平均正确率 P%」；形态同 stats-section__desc） */
+.mock-section__desc {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
 }
 
 /* ===== 进行中模考 ===== */
@@ -384,4 +393,124 @@
   font-size: var(--font-size-aux);
   line-height: var(--line-height-normal);
   color: var(--color-text-tertiary);
+}
+
+/* ===== 模考历史（T2-01e，F2-4 历次成绩与纵向对比） =====
+   字面量均为规范定值：柱区高取 --spacing-4xl（96，迷你趋势矮于统计页主图表）、
+   柱列最小宽 --spacing-sm（柱多撑出横向滚动）、柱体最小高 --spacing-3xs（stats 柱先例）、
+   1px 底边基线（边框例外） */
+
+/* 趋势卡：柱区横向滚动容器（柱数多时） */
+.mock-history__trend {
+  min-width: 0;
+}
+
+.mock-history__trend-scroll {
+  overflow-x: auto;
+}
+
+/* 柱区：宽 max-content（柱多撑宽触发滚动）且至少撑满容器（柱少时 flex-grow 均摊满宽） */
+.mock-history__trend-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-3xs);
+  width: max-content;
+  min-width: 100%;
+  height: var(--spacing-4xl);
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.mock-history__trend-col {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  min-width: var(--spacing-sm);
+  height: 100%;
+}
+
+/* 柱体：单色主色，高度 = 该次正确率比（组件内联，数据驱动）；title 悬停明细 */
+.mock-history__trend-bar {
+  width: 100%;
+  min-height: var(--spacing-3xs);
+  background-color: var(--color-primary);
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+
+/* 历次行列表：单列纵向（行内桌面自适应为左右布局） */
+.mock-history__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-md);
+}
+
+.mock-history__item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--spacing-sm);
+}
+
+@media (min-width: 768px) {
+  .mock-history__item {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--spacing-md);
+  }
+}
+
+/* 主信息列：min-width:0 链（长卷名 ellipsis 生效的前提，T2-01c 同款教训） */
+.mock-history__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--spacing-2xs);
+}
+
+.mock-history__head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--spacing-xs);
+}
+
+/* 卷名单行省略，给年份 Tag 让位 */
+.mock-history__name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-body-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+/* 年份 Tag 不 shrink（长卷名省略优先让位给它） */
+.mock-history__year {
+  flex-shrink: 0;
+}
+
+/* 元信息行：长串自然折行；数值 mono + tabular-nums（§3.1）次级强调 */
+.mock-history__meta {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+.mock-history__num {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 成绩单入口：移动端通栏主信息列之下，桌面吸右不 shrink */
+@media (min-width: 768px) {
+  .mock-history__action {
+    flex-shrink: 0;
+  }
 }

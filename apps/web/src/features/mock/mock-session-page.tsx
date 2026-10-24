@@ -18,7 +18,7 @@
  * - 交卷：确认 Modal（已答 N/M、未答提示、确认中禁关闭）→ 末次计时上报 → submit → 成功停计时，
  *   完成态用响应 MockSessionReport.summary 给摘要；倒计时归零自动交卷不经确认（时间到即定卷）
  * - 已交卷/已放弃回看：不启动计时，题面只读（选项无操作），顶部完成态 + 引导
- *   （「查看成绩单」禁用占位：T2-01e 落地成绩单路由）
+ *   （「查看成绩单」跳 T2-01e 成绩单页 /mock/sessions/:id/report）
  * - 错误与边界：非数字 id / 404 → 占位式错误态 + 返回入口；其余加载失败 → 提示条 + 重试；
  *   401 由 api client 全局回调接管（本页不特判）
  */
@@ -231,6 +231,7 @@ function CompletedPanel({
   report,
   reason,
   onBack,
+  onViewReport,
 }: {
   detail: MockSessionDetail
   /** null = 回看进入（交卷响应不随详情下发，仅进度计数可见） */
@@ -238,6 +239,8 @@ function CompletedPanel({
   /** null = 回看进入 */
   reason: SubmitReason | null
   onBack: () => void
+  /** 查看成绩单（T2-01e 成绩单页 /mock/sessions/:id/report；abandoned 会话亦可取成绩单） */
+  onViewReport: () => void
 }) {
   const summary = report?.summary ?? null
   const answered = summary?.answered ?? detail.answeredCount
@@ -274,9 +277,8 @@ function CompletedPanel({
       </div>
       <div className="mock-session-complete__actions">
         <Button onClick={onBack}>返回整卷模考</Button>
-        {/* 成绩单详情页为 T2-01e：本片先禁用占位 */}
-        <Button variant="secondary" disabled>
-          查看成绩单（开发中）
+        <Button variant="secondary" onClick={onViewReport}>
+          查看成绩单
         </Button>
       </div>
     </Card>
@@ -412,9 +414,10 @@ function MockSessionView({ sessionId }: { sessionId: number }) {
       setConfirmOpen(false)
       // 强制收卷时答题卡弹层可能正开着，一并收起
       setSheetOpen(false)
-      // 列表（进行中消失）与详情（status 翻 submitted）都失效
+      // 列表（进行中消失）与详情（status 翻 submitted）都失效；历史区即时反映最新成绩单
       void queryClient.invalidateQueries({ queryKey: mockQueryKeys.sessions })
       void queryClient.invalidateQueries({ queryKey: mockQueryKeys.session(sessionId) })
+      void queryClient.invalidateQueries({ queryKey: mockQueryKeys.history })
     },
   })
   const { mutate: runSubmit } = submitMutation
@@ -621,7 +624,13 @@ function MockSessionView({ sessionId }: { sessionId: number }) {
       </header>
 
       {!inProgress && (
-        <CompletedPanel detail={sessionDetail} report={report} reason={submitReason} onBack={backToMock} />
+        <CompletedPanel
+          detail={sessionDetail}
+          report={report}
+          reason={submitReason}
+          onBack={backToMock}
+          onViewReport={() => navigate(`/mock/sessions/${String(sessionId)}/report`)}
+        />
       )}
 
       <div className="mock-session__layout">

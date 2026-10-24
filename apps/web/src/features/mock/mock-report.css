@@ -1,0 +1,402 @@
+/* 整卷模考·成绩单页（T2-01e）：顶栏 + 总览 StatChip 行 + 模块分布卡栅格 + 逐题对错回顾网格
+   移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
+   字面量均为规范定值：返回图标 20（§5 导航/按钮档）、回顾题钮高 32（§6.6 徽章定值复用——
+   纯展示非触摸目标的小号化，答题卡 44 档不适用）、超时间内环 2px（§6.1 焦点环定值）、
+   焦点环 2px（§6.1）、1px 边框（例外）；条宽用百分比（数据驱动，同 stats 先例） */
+
+/* ===== 顶栏（形态同作答页 topbar） ===== */
+
+.mock-report__topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-xs);
+}
+
+.mock-report__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+}
+
+.mock-report__back:hover {
+  color: var(--color-text-primary);
+}
+
+.mock-report__back:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* 返回入口图标 20px（§5 导航/按钮档） */
+.mock-report__back > svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 标题占满剩余空间，把状态 Tag 与交卷时间挤到行尾 */
+.mock-report__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+/* 移动端标题独占一行：与返回链接/Tag/时间同排会被挤压成单字省略（390px 实测）。
+   须置于主规则之后——flex:1 简写含 basis 0%，先写的媒体查询会被其后主规则的简写覆盖 */
+@media (max-width: 767px) {
+  .mock-report__title {
+    flex-basis: 100%;
+  }
+}
+
+.mock-report__time {
+  flex-shrink: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* 卷信息行：卷名单行省略（长卷名不撑版式，min-width:0 链见顶栏 flex 容器） */
+.mock-report__paper {
+  margin: 0 0 var(--spacing-lg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+}
+
+/* ===== 总览区：StatChip 行（§6.6，组件自带形态，此处只管排布；同 stats-overview） ===== */
+
+.mock-report__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-2xl);
+}
+
+/* ===== 区块（形态同 stats-section） ===== */
+
+.mock-report__section {
+  margin-bottom: var(--spacing-2xl);
+}
+
+.mock-report__section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-xs) var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.mock-report__section-title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.mock-report__section-desc {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 模块分布卡栅格（移动 1 列 / ≥768px 2 列；同 stats-modules 口径） ===== */
+
+.mock-report__modules {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .mock-report__modules {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+.mock-report__module {
+  display: flex;
+  flex-direction: column;
+  /* grid item 自动最小尺寸取内容 min-content，min-width:0 后 1fr 列才真正约束卡宽（T2-01c 同款教训） */
+  min-width: 0;
+  gap: var(--spacing-sm);
+}
+
+.mock-report__module-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.mock-report__module-name {
+  margin: 0;
+  font-size: var(--font-size-body-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+.mock-report__module-answered {
+  flex-shrink: 0;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-tertiary);
+}
+
+/* 计数数字：mono + tabular-nums（§3.1），次级强调 */
+.mock-report__num {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 正确率双色比例条：轨道 bg-muted + 答对 primary + 答错 danger（stats 页先例；
+   未答题不占槽——满槽 = answered，与正确率口径一致） */
+.mock-report__module-bar {
+  display: flex;
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.mock-report__module-seg {
+  height: 100%;
+}
+
+.mock-report__module-seg--correct {
+  background-color: var(--color-primary);
+}
+
+.mock-report__module-seg--wrong {
+  background-color: var(--color-danger);
+}
+
+.mock-report__module-stats {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 逐题回顾（按模块分组的小号对错网格） ===== */
+
+.mock-report__review {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--spacing-md);
+}
+
+.mock-report__group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--spacing-xs);
+}
+
+.mock-report__group-name {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+}
+
+/* 题钮网格：auto-fill 自适应列数，题钮 32px 起（§6.6 徽章定值复用的小号形态） */
+.mock-report__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
+  gap: var(--spacing-2xs);
+}
+
+/* 题钮三态：未答=描边 / 答对=success-soft 填充 / 答错=danger-soft 填充（§7.1 判分态 soft 成对，
+   对比度安全）；超时叠 warning 内环角标（2px 内阴影，不挤占题号空间） */
+.mock-report__cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-micro);
+  line-height: 1;
+  color: var(--color-text-tertiary);
+}
+
+.mock-report__cell--correct {
+  background-color: var(--color-success-soft);
+  border-color: transparent;
+  color: var(--color-success-soft-text);
+}
+
+.mock-report__cell--wrong {
+  background-color: var(--color-danger-soft);
+  border-color: transparent;
+  color: var(--color-danger-soft-text);
+}
+
+.mock-report__cell--timeout {
+  box-shadow: inset 0 0 0 2px var(--color-warning);
+}
+
+/* 四态图例：色块形态与题钮一致（12px 方块 = --spacing-sm token） */
+.mock-report__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+.mock-report__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+}
+
+.mock-report__swatch {
+  width: var(--spacing-sm);
+  height: var(--spacing-sm);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xs);
+}
+
+.mock-report__swatch--correct {
+  background-color: var(--color-success-soft);
+  border-color: transparent;
+}
+
+.mock-report__swatch--wrong {
+  background-color: var(--color-danger-soft);
+  border-color: transparent;
+}
+
+.mock-report__swatch--timeout {
+  box-shadow: inset 0 0 0 2px var(--color-warning);
+}
+
+/* ===== 加载错误态（提示条 + 重试/返回，stats 页模式） ===== */
+
+.mock-report__error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.mock-report__error-text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+.mock-report__error-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: var(--spacing-xs);
+}
+
+/* ===== 加载骨架（§6.8：bg-muted 圆角块 + 呼吸动画；总览徽章/模块卡/回顾卡各给形似占位） ===== */
+
+.mock-report-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2xl);
+}
+
+/* 徽章骨架行：与总览 StatChip 行同构（移动 2 列 / ≥768px 5 列，高 32 取 §6.6 徽章定值） */
+.mock-report-skeleton__chips {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-xs);
+}
+
+@media (min-width: 768px) {
+  .mock-report-skeleton__chips {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
+/* 模块卡骨架栅格：与 mock-report__modules 同构（切换不跳版式） */
+.mock-report-skeleton__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .mock-report-skeleton__grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+.mock-report-skeleton__chip {
+  height: 32px;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+  animation: mock-report-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+.mock-report-skeleton__card {
+  min-height: var(--spacing-4xl);
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-lg);
+  animation: mock-report-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+/* 回顾卡骨架：高取两倍首屏留白档（题钮网格体量的近似占位；token 倍率经 calc 派生，不新增字面量） */
+.mock-report-skeleton__card--tall {
+  min-height: calc(var(--spacing-4xl) * 2);
+}
+
+@keyframes mock-report-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mock-report-skeleton__chip,
+  .mock-report-skeleton__card {
+    animation: none;
+  }
+}

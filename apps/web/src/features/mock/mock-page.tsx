@@ -1,10 +1,15 @@
 /**
  * 整卷模考·卷选页（T2-01c，/mock，requiresAuth）
  * - 进行中模考：useQuery 拉取 in_progress 会话列表，非空才渲染（空/加载/失败均不占位），「续考」→ /mock/sessions/:id
+ * - 模考历史（T2-01e，F2-4 历次成绩与纵向对比）：useQuery 已交卷会话概要（staleTime 60s），
+ *   非空才渲染；区头汇总「共 N 次 · 平均正确率 P%」（各次 correct/answered 加权平均派生，
+ *   Σanswered=0 除零兜底「—」）+ 历次正确率迷你趋势（纯 div 单色柱状照 stats 趋势先例：
+ *   每会话一柱、柱高=正确率比、按交卷时间升序、title 悬停明细、柱多横向滚动）+
+ *   历次行（卷名/年份/正确率/答对/用时/交卷时间 + 成绩单入口 → /mock/sessions/:id/report）
  * - 卷目录：useQuery 全量下发（staleTime 5 分钟，低频变化）；筛选（年份/地区/卷型/完整度）纯前端过滤，
  *   选项从卷数据派生；完整卷置顶推荐（D2 前端口径：full 档在前，同档保持后端定序）
  * - 开考确认：Modal 内时长可调（默认 deriveMockTotalMinutes，shared 常量夹区间），提交中禁关闭（Esc/遮罩/取消全拦截），
- *   400/404 错误在弹窗内 danger 条展示；201 成功 invalidate 会话列表后跳作答页（T2-01d 占位路由）
+ *   400/404 错误在弹窗内 danger 条展示；201 成功 invalidate 会话列表后跳作答页
  * - 401 由 api client 全局回调接管（本页不特判）
  */
 
@@ -13,13 +18,19 @@ import type { KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Clock, FileText, Play } from 'lucide-react'
-import type { MockSessionSummary, PaperCompleteness, PaperSummary } from '@ncse/shared'
+import type { MockHistoryItem, MockSessionSummary, PaperCompleteness, PaperSummary } from '@ncse/shared'
 import {
   MOCK_TOTAL_MINUTES_MAX,
   MOCK_TOTAL_MINUTES_MIN,
   deriveMockTotalMinutes,
 } from '@ncse/shared'
-import { ApiError, createMockSessionApi, fetchMockSessionsApi, fetchPapersApi } from '../../api'
+import {
+  ApiError,
+  createMockSessionApi,
+  fetchMockHistoryApi,
+  fetchMockSessionsApi,
+  fetchPapersApi,
+} from '../../api'
 import { Button, Card, EmptyPlaceholder, Input, Modal, Select, Tag } from '../../components'
 import type { TagTone } from '../../components'
 import { mockQueryKeys } from './mock-query-keys'
@@ -29,6 +40,45 @@ import './mock.css'
 const SESSIONS_STALE_TIME = 30_000
 /** 卷目录 staleTime：5 分钟（低频变化，仅导入新卷时后端内容才变） */
 const PAPERS_STALE_TIME = 5 * 60_000
+/** 模考历史 staleTime：60s（定卷后条目只增不改，分钟级新鲜度足够） */
+const HISTORY_STALE_TIME = 60_000
+
+/** 历史列表查询缺省回退：模块级常量保证引用稳定（下游 useMemo 依赖不逐渲染漂移） */
+const EMPTY_HISTORY: MockHistoryItem[] = []
+
+/** 百分比格式化（zh-CN percent 样式，保留一位小数；stats 页先例） */
+const PERCENT_FORMAT = new Intl.NumberFormat('zh-CN', {
+  style: 'percent',
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
+
+/** 正确率显示：answered=0 除零兜底「—」（stats 页统一口径），否则一位小数百分比 */
+function formatAccuracy(correct: number, answered: number): string {
+  if (answered <= 0) return '—'
+  return PERCENT_FORMAT.format(correct / answered)
+}
+
+/** 总用时显示：毫秒取整秒，不足 1 分钟显「N 秒」，否则「X 分 Y 秒」 */
+function formatDurationMs(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000)
+  if (totalSeconds < 60) return `${String(totalSeconds)} 秒`
+  return `${String(Math.floor(totalSeconds / 60))} 分 ${String(totalSeconds % 60)} 秒`
+}
+
+/** ISO-8601 时间中文格式化（如「2026年10月13日 14:05」）；不可解析时原样回显（T1-08f/T1-10b 惯例） */
+function formatDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
 
 /** 筛选「全部」哨兵值 */
 const FILTER_ALL = 'all'
@@ -120,6 +170,113 @@ function MockSessionCard({ session }: { session: MockSessionSummary }) {
   )
 }
 
+/** 历次正确率迷你趋势（纯 div 单色柱状，stats 趋势先例）：每会话一柱、柱高=正确率比、按交卷时间升序；全未答会话零高度仅占位列 */
+function MockHistoryTrend({ items, averageAccuracy }: { items: MockHistoryItem[]; averageAccuracy: string }) {
+  const summary = `历次模考正确率趋势柱状图：共 ${String(items.length)} 次，平均正确率 ${averageAccuracy}`
+  return (
+    <Card className="mock-history__trend">
+      <div className="mock-history__trend-scroll">
+        <div className="mock-history__trend-chart" role="img" aria-label={summary}>
+          {items.map((item) => {
+            const { correct, answered } = item.summary
+            // 未答会话（answered=0）：零高度仅占位列，不渲染柱体（无正确率可表达，stats 零填空天先例）
+            if (answered === 0) {
+              return <div key={item.id} className="mock-history__trend-col" />
+            }
+            const heightPct = (correct / answered) * 100
+            const tip = `${item.paperName}（${formatDateTime(item.submittedAt)}）：正确率 ${formatAccuracy(
+              correct,
+              answered,
+            )} · 答对 ${String(correct)}/${String(answered)}`
+            return (
+              <div key={item.id} className="mock-history__trend-col">
+                <div
+                  className="mock-history__trend-bar"
+                  style={{ height: `${String(heightPct)}%` }}
+                  title={tip}
+                />
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+/** 历史行：卷名（单行省略）+ 年份 Tag + 正确率/答对/用时/交卷时间 + 成绩单入口（跳 report 页） */
+function MockHistoryRow({ item }: { item: MockHistoryItem }) {
+  const navigate = useNavigate()
+  const { summary } = item
+  return (
+    <Card className="mock-history__item">
+      <div className="mock-history__main">
+        <div className="mock-history__head">
+          <h3 className="mock-history__name">{item.paperName}</h3>
+          {item.paperYear !== null && (
+            <Tag tone="muted" className="mock-history__year">
+              {item.paperYear} 年
+            </Tag>
+          )}
+        </div>
+        <p className="mock-history__meta">
+          正确率{' '}
+          <span className="mock-history__num">
+            {formatAccuracy(summary.correct, summary.answered)}
+          </span>
+          {' · '}答对{' '}
+          <span className="mock-history__num">
+            {summary.correct}/{summary.total}
+          </span>
+          {' · '}用时 <span className="mock-history__num">{formatDurationMs(item.elapsedMs)}</span>
+          {' · '}交卷于 {formatDateTime(item.submittedAt)}
+        </p>
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        className="mock-history__action"
+        onClick={() => navigate(`/mock/sessions/${String(item.id)}/report`)}
+      >
+        成绩单
+      </Button>
+    </Card>
+  )
+}
+
+/** 模考历史区（F2-4 一期口径）：汇总行 + 迷你趋势 + 历次行；模块级纵向对比等深度留后续 */
+function MockHistorySection({ items }: { items: MockHistoryItem[] }) {
+  // 加权平均正确率：Σcorrect/Σanswered（各次按已答数加权，stats 派生口径；Σanswered=0 兜底「—」）
+  let totalCorrect = 0
+  let totalAnswered = 0
+  for (const item of items) {
+    totalCorrect += item.summary.correct
+    totalAnswered += item.summary.answered
+  }
+  const averageAccuracy = formatAccuracy(totalCorrect, totalAnswered)
+  // 趋势按交卷时间升序（早 → 晚；history 端点为倒序，副本反转不改原数组）
+  const trendItems = useMemo(() => [...items].reverse(), [items])
+
+  return (
+    <section className="mock-section" aria-labelledby="mock-history-title">
+      <div className="mock-section__head">
+        <h2 id="mock-history-title" className="mock-section__title">
+          模考历史
+        </h2>
+        <p className="mock-section__desc">
+          共 {items.length} 次 · 平均正确率 {averageAccuracy}
+        </p>
+      </div>
+      <MockHistoryTrend items={trendItems} averageAccuracy={averageAccuracy} />
+      <div className="mock-history__list">
+        {items.map((item) => (
+          <MockHistoryRow key={item.id} item={item} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 /** 试卷卡片：卷名（两行截断）+ 年份/地区/卷型 Tag 行（缺省不渲染）+ 完整度 Tag 与题数，点击/Enter/Space 开确认弹窗 */
 function PaperCard({
   paper,
@@ -195,6 +352,11 @@ export function MockPage() {
     queryKey: mockQueryKeys.papers,
     queryFn: fetchPapersApi,
     staleTime: PAPERS_STALE_TIME,
+  })
+  const historyQuery = useQuery({
+    queryKey: mockQueryKeys.history,
+    queryFn: fetchMockHistoryApi,
+    staleTime: HISTORY_STALE_TIME,
   })
 
   // 四维筛选：年份/地区/卷型/完整度（完整度默认「完整」，D2 置顶推荐口径）
@@ -299,6 +461,8 @@ export function MockPage() {
 
   // 进行中模考区：非空才渲染（空/加载中/失败均不占位，卷目录为主区）
   const sessions = sessionsQuery.data ?? []
+  // 模考历史区：同口径非空才渲染（空/加载中/失败均不占位）
+  const history = historyQuery.data ?? EMPTY_HISTORY
 
   return (
     <div className="mock">
@@ -323,6 +487,8 @@ export function MockPage() {
           </div>
         </section>
       )}
+
+      {history.length > 0 && <MockHistorySection items={history} />}
 
       <section className="mock-section" aria-labelledby="mock-papers-title">
         <div className="mock-section__head">
