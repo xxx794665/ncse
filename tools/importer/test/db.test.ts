@@ -10,6 +10,11 @@
  * 合成夹具：跨模块同名卷聚合 + 跨卷重复 qid 双卷归属）、质量门跳过 pair 与
  * paper_question_skipped warning、孤儿 pair/卷清理、papers.json 缺失
  * （paper_manifest_missing → 退出码 1）与 stats.papers/questionPapers 计数。
+ * T2-01b 增蓝图种子断言：blueprints/blueprint_modules 幂等 upsert（对照
+ * XINGCE_BLUEPRINTS 精确一致）与孤儿清理（先明细后主表、限定行测科目）、独立自包含
+ * blueprints.sql（语句与 import.sql 对应段逐字节一致，干净库单独重放幂等）、
+ * blueprintSeedStatements 注入假目录的 validateBlueprint 失败路径，
+ * stats 增 blueprints/blueprintModules 计数。
  * 夹具全部为合成虚构题目；产物与 SQL 写入系统临时目录，测试后清理。
  */
 import fs from 'node:fs'
@@ -18,10 +23,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { runDbStage, InvalidProductsError } from '../src/db-stage.js'
+import { runDbStage, blueprintSeedStatements, InvalidProductsError } from '../src/db-stage.js'
 import { main } from '../src/main.js'
 import { runImport, resolveWithin } from '../src/pipeline.js'
-import type { RichContent } from '@ncse/shared'
+import { XINGCE_BLUEPRINTS } from '@ncse/shared'
+import type { ExamBlueprint, RichContent } from '@ncse/shared'
 import type { ParsedGroup, ParsedPaper, ParsedQuestion } from '../src/types.js'
 
 const fixturesDir = fileURLToPath(new URL('./fixtures', import.meta.url))
@@ -259,7 +265,8 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     expect(runs[0].input_digest).toMatch(/^[0-9a-f]{64}$/)
     expect(runs[0].input_digest).toBe(result.inputDigest)
     // images：clean 夹具实际进 SQL 的 image 段 path 去重 = 13（见下方图片统计用例的逐项清点）；
-    // papers/questionPapers：clean 夹具 7 卷名各自唯一、无质量门跳过 → 7 卷 12 pair
+    // papers/questionPapers：clean 夹具 7 卷名各自唯一、无质量门跳过 → 7 卷 12 pair；
+    // blueprints/blueprintModules：T2-01b 种子恒为 XINGCE_BLUEPRINTS（2 卷型 × 六模块）
     expect(JSON.parse(runs[0].stats)).toEqual({
       questions: 12,
       questionGroups: 3,
@@ -267,6 +274,8 @@ describe('clean 产物：SQL 执行与数据断言', () => {
       knowledgePoints: 0,
       papers: 7,
       questionPapers: 12,
+      blueprints: XINGCE_BLUEPRINTS.length,
+      blueprintModules: XINGCE_BLUEPRINTS.reduce((sum, bp) => sum + bp.modules.length, 0),
     })
     expect(result.stats).toEqual({
       questions: 12,
@@ -275,6 +284,8 @@ describe('clean 产物：SQL 执行与数据断言', () => {
       knowledgePoints: 0,
       papers: 7,
       questionPapers: 12,
+      blueprints: XINGCE_BLUEPRINTS.length,
+      blueprintModules: XINGCE_BLUEPRINTS.reduce((sum, bp) => sum + bp.modules.length, 0),
     })
     db.close()
   })
@@ -415,6 +426,221 @@ describe('试卷与归属（T2-01a/ADR-0012，paper-input 产物）', () => {
     // import_runs 行 stats JSON 带试卷计数
     expect(a.sql).toContain('"papers":2')
     expect(a.sql).toContain('"questionPapers":5')
+  })
+})
+
+describe('蓝图种子（T2-01b，XINGCE_BLUEPRINTS 幂等入库）', () => {
+  /** 行测科目/申论科目 id 的标量子查询（与 db-stage.ts 同文本，测试注入行定位用） */
+  const XINGCE_SUBJECT_ID =
+    "(SELECT id FROM subjects WHERE exam_type_id=(SELECT id FROM exam_types WHERE code='civil_service') AND code='xingce')"
+  const SHENLUN_SUBJECT_ID =
+    "(SELECT id FROM subjects WHERE exam_type_id=(SELECT id FROM exam_types WHERE code='civil_service') AND code='shenlun')"
+
+  /** 蓝图行视图：code + name + 科目 code（JOIN 展开，序 = id） */
+  const blueprintRows = (db: DatabaseSync): Array<{ code: string; name: string; subject: string }> =>
+    rows(
+      db,
+      `SELECT b.code AS code, b.name AS name, s.code AS subject
+       FROM blueprints b JOIN subjects s ON s.id = b.subject_id
+       ORDER BY b.id`,
+    )
+
+  /** 蓝图明细行视图：蓝图 code + 模块 code + 题量/时长（JOIN 展开，序 = 蓝图 id → 模块 sort_order） */
+  const blueprintModuleRows = (
+    db: DatabaseSync,
+  ): Array<{ blueprint: string; module: string; question_count: number; time_limit_minutes: number }> =>
+    rows(
+      db,
+      `SELECT b.code AS blueprint, m.code AS module, bm.question_count AS question_count, bm.time_limit_minutes AS time_limit_minutes
+       FROM blueprint_modules bm
+       JOIN blueprints b ON b.id = bm.blueprint_id
+       JOIN modules m ON m.id = bm.module_id
+       ORDER BY b.id, m.sort_order`,
+    )
+
+  /** 期望形态：XINGCE_BLUEPRINTS → 行视图（精确一致断言的对照面，序 = 目录序） */
+  const expectedBlueprints = XINGCE_BLUEPRINTS.map((bp) => ({ code: bp.code, name: bp.name, subject: 'xingce' }))
+  const expectedBlueprintModules = XINGCE_BLUEPRINTS.flatMap((bp) =>
+    bp.modules.map((plan) => ({
+      blueprint: bp.code,
+      module: plan.module,
+      question_count: plan.questionCount,
+      time_limit_minutes: plan.timeLimitMinutes,
+    })),
+  )
+
+  it('种子入库：blueprints 2 行 / blueprint_modules 12 行，列值与 XINGCE_BLUEPRINTS 精确一致（挂对 subject/module）', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    expect(blueprintRows(db)).toEqual(expectedBlueprints)
+    expect(blueprintModuleRows(db)).toEqual(expectedBlueprintModules)
+    expect(result.stats.blueprints).toBe(expectedBlueprints.length)
+    expect(result.stats.blueprintModules).toBe(expectedBlueprintModules.length)
+    // import_runs 行 stats JSON 带蓝图计数
+    expect(result.sql).toContain(`"blueprints":${expectedBlueprints.length}`)
+    expect(result.sql).toContain(`"blueprintModules":${expectedBlueprintModules.length}`)
+    db.close()
+  })
+
+  it('幂等重放：同一 SQL 再 exec → 蓝图与明细的 id、行值均不变（ON CONFLICT 原地更新）', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    const blueprintSnapshot = rows<{ id: number; code: string; name: string }>(
+      db,
+      'SELECT id, code, name FROM blueprints ORDER BY id',
+    )
+    const moduleSnapshot = rows<{
+      id: number
+      blueprint: string
+      module: string
+      question_count: number
+      time_limit_minutes: number
+    }>(
+      db,
+      `SELECT bm.id, b.code AS blueprint, m.code AS module, bm.question_count, bm.time_limit_minutes
+       FROM blueprint_modules bm
+       JOIN blueprints b ON b.id = bm.blueprint_id
+       JOIN modules m ON m.id = bm.module_id
+       ORDER BY bm.id`,
+    )
+    db.exec(result.sql)
+    expect(rows<{ id: number; code: string; name: string }>(db, 'SELECT id, code, name FROM blueprints ORDER BY id')).toEqual(
+      blueprintSnapshot,
+    )
+    expect(
+      rows<{ id: number; blueprint: string; module: string; question_count: number; time_limit_minutes: number }>(
+        db,
+        `SELECT bm.id, b.code AS blueprint, m.code AS module, bm.question_count, bm.time_limit_minutes
+         FROM blueprint_modules bm
+         JOIN blueprints b ON b.id = bm.blueprint_id
+         JOIN modules m ON m.id = bm.module_id
+         ORDER BY bm.id`,
+      ),
+    ).toEqual(moduleSnapshot)
+    db.close()
+  })
+
+  it('孤儿清理：种子外蓝图与其明细重放后被删（先明细后主表），他科目蓝图与其明细不受影响', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    // 预插申论科目 + 其蓝图与明细（清理限定行测科目，均不得误删）
+    db.exec(
+      `INSERT INTO subjects (exam_type_id, code, name) VALUES ((SELECT id FROM exam_types WHERE code='civil_service'), 'shenlun', '申论')`,
+    )
+    db.exec(`INSERT INTO blueprints (subject_id, code, name) VALUES (${SHENLUN_SUBJECT_ID}, 'shenlun_bp', '申论蓝图')`)
+    db.exec(
+      `INSERT INTO blueprint_modules (blueprint_id, module_id, question_count, time_limit_minutes)
+       VALUES ((SELECT id FROM blueprints WHERE subject_id=${SHENLUN_SUBJECT_ID} AND code='shenlun_bp'), (SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='verbal'), 8, 8)`,
+    )
+    // 预插行测种子外蓝图 + 其下明细（重放后先删明细再删主表行）
+    db.exec(`INSERT INTO blueprints (subject_id, code, name) VALUES (${XINGCE_SUBJECT_ID}, 'ghost_bp', '幽灵卷型')`)
+    db.exec(
+      `INSERT INTO blueprint_modules (blueprint_id, module_id, question_count, time_limit_minutes)
+       VALUES ((SELECT id FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='ghost_bp'), (SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='verbal'), 5, 5)`,
+    )
+
+    db.exec(result.sql) // 同产物重跑 → 孤儿清理回收种子外行
+
+    const remaining = rows<{ code: string; subject: string }>(
+      db,
+      `SELECT b.code AS code, s.code AS subject FROM blueprints b JOIN subjects s ON s.id = b.subject_id ORDER BY b.code`,
+    )
+    expect(remaining).toEqual(
+      [
+        ...expectedBlueprints.map((entry) => ({ code: entry.code, subject: 'xingce' })),
+        { code: 'shenlun_bp', subject: 'shenlun' },
+      ].sort((a, b) => (a.code < b.code ? -1 : 1)),
+    )
+    // 明细总数 = 种子 12 + 申论 1（幽灵明细被先行清理；申论明细保留）
+    expect(rows<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM blueprint_modules')).toEqual([
+      { n: expectedBlueprintModules.length + 1 },
+    ])
+    db.close()
+  })
+
+  it('注入目录执行：种子蓝图下种子外模块明细被卷内 NOT IN 清理，明细值被 upsert 原地更新', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql) // 分类体系 + 真目录全量种子在位
+    // 手工铺部分卷：两条明细（verbal + quantitative），随后执行只含 verbal 的注入目录段
+    db.exec(`INSERT INTO blueprints (subject_id, code, name) VALUES (${XINGCE_SUBJECT_ID}, 'partial_bp', '部分卷')`)
+    for (const [code, count] of [
+      ['verbal', 1],
+      ['quantitative', 2],
+    ] as const) {
+      db.exec(
+        `INSERT INTO blueprint_modules (blueprint_id, module_id, question_count, time_limit_minutes)
+         VALUES ((SELECT id FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='partial_bp'), (SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='${code}'), ${count}, ${count})`,
+      )
+    }
+    const partial: ExamBlueprint = {
+      code: 'partial_bp',
+      name: '部分卷',
+      totalMinutes: 35,
+      modules: [{ module: 'verbal', questionCount: 10, timeLimitMinutes: 35 }],
+    }
+    db.exec(
+      blueprintSeedStatements([partial])
+        .map((statement) => `${statement};`)
+        .join('\n'),
+    )
+
+    // 注入目录替换真目录：行测下仅剩 partial_bp；其明细仅剩 verbal 且值被 upsert 更新为 10/35
+    expect(rows<{ code: string }>(db, `SELECT code FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} ORDER BY code`)).toEqual(
+      [{ code: 'partial_bp' }],
+    )
+    expect(blueprintModuleRows(db)).toEqual([{ blueprint: 'partial_bp', module: 'verbal', question_count: 10, time_limit_minutes: 35 }])
+    db.close()
+  })
+
+  it('blueprints.sql 独立产物：落盘与返回文本一致、语句为 import.sql 对应段逐字节一致的自包含前缀；干净库单独重放两次幂等', () => {
+    const result = runDbStage({ productsDir: cleanProducts, version: 3 })
+    const blueprintsSqlPath = path.join(cleanProducts, 'blueprints.sql')
+    expect(result.blueprintsSqlPath).toBe(blueprintsSqlPath)
+    expect(fs.readFileSync(blueprintsSqlPath, 'utf8')).toBe(result.blueprintsSql)
+
+    const bpLines = result.blueprintsSql.split('\n')
+    const sqlLines = result.sql.split('\n')
+    expect(bpLines[0]).toMatch(/^-- ncse 蓝图种子 SQL（自包含/)
+    expect(bpLines[bpLines.length - 1]).toBe('') // 以换行结尾
+    // 自包含超集断言：头注释外的全部语句 = import.sql 去头注释后的同序前缀
+    // （分类体系 8 条 + 蓝图 upsert 14 条 + 蓝图孤儿清理 4 条，逐字节一致）
+    expect(bpLines.slice(1, -1)).toEqual(sqlLines.slice(1, bpLines.length - 1))
+    expect(result.blueprintsSql).toContain('INSERT INTO blueprints (subject_id, code, name)')
+    expect(result.blueprintsSql).toContain('INSERT INTO blueprint_modules (blueprint_id, module_id, question_count, time_limit_minutes)')
+    expect(result.blueprintsSql).toContain('DELETE FROM blueprint_modules ')
+    expect(result.blueprintsSql).toContain('DELETE FROM blueprints ')
+    // 不含 version 与 import_runs（跨 version 逐字节稳定，便于远端轻量执行）
+    expect(result.blueprintsSql).not.toContain('import_runs')
+    expect(result.blueprintsSql).not.toContain('version=')
+    // 与 version 无关：另一 version 生成的 blueprints.sql 逐字节相同
+    expect(runDbStage({ productsDir: cleanProducts, version: 4 }).blueprintsSql).toBe(result.blueprintsSql)
+
+    // 干净库（仅迁移）单独执行 → 种子完整；再执行一遍 → 幂等（id 与行值不变）
+    const db = createDb()
+    db.exec(result.blueprintsSql)
+    expect(blueprintRows(db)).toEqual(expectedBlueprints)
+    expect(blueprintModuleRows(db)).toEqual(expectedBlueprintModules)
+    const snapshot = rows<{ id: number; code: string }>(db, 'SELECT id, code FROM blueprints ORDER BY id')
+    db.exec(result.blueprintsSql)
+    expect(rows<{ id: number; code: string }>(db, 'SELECT id, code FROM blueprints ORDER BY id')).toEqual(snapshot)
+    expect(blueprintModuleRows(db)).toEqual(expectedBlueprintModules)
+    db.close()
+  })
+
+  it('validateBlueprint 失败路径：注入 totalMinutes 不自洽的假目录 → 抛错（消息含 code 与问题）；空目录亦抛错', () => {
+    const bogus: ExamBlueprint = {
+      code: 'bogus_bp',
+      name: '坏蓝图',
+      totalMinutes: 999,
+      modules: [{ module: 'verbal', questionCount: 10, timeLimitMinutes: 10 }],
+    }
+    expect(() => blueprintSeedStatements([bogus])).toThrow(/bogus_bp/)
+    expect(() => blueprintSeedStatements([bogus])).toThrow(/totalMinutes\(999\)/)
+    expect(() => blueprintSeedStatements([])).toThrow(/蓝图目录为空/)
   })
 })
 
@@ -601,6 +827,8 @@ describe('图片统计（stats.images 做实：进 SQL 的 image 段 path 去重
       knowledgePoints: 0,
       papers: 7,
       questionPapers: 12,
+      blueprints: XINGCE_BLUEPRINTS.length,
+      blueprintModules: XINGCE_BLUEPRINTS.reduce((sum, bp) => sum + bp.modules.length, 0),
     })
     expect(result.sql).toContain('"images":12')
     // 行级抽查：题干 JSON 列里确实已是 img/ 键形态（stem 列含 img/ 前缀路径）

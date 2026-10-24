@@ -175,6 +175,10 @@ export interface DbStageStats {
   papers: number
   /** 题目-试卷归属 pair 写入数（question_papers 行数；qid 解析不到的跳过不计） */
   questionPapers: number
+  /** 蓝图种子写入数（blueprints upsert 行数，T2-01b；恒 XINGCE_BLUEPRINTS 长度） */
+  blueprints: number
+  /** 蓝图模块明细写入数（blueprint_modules upsert 行数；蓝图明细条数合计） */
+  blueprintModules: number
 }
 
 /** runDbStage 返回值（SQL 文本与写入信息，供测试断言） */
@@ -183,6 +187,10 @@ export interface DbStageResult {
   sql: string
   /** SQL 写入路径（绝对路径；恒为产物目录下的 import.sql） */
   sqlPath: string
+  /** 独立蓝图种子 SQL 全文（T2-01b：自包含可单独执行，含分类体系定位行 + 蓝图种子段；与 version 无关，逐字节确定） */
+  blueprintsSql: string
+  /** 蓝图种子 SQL 写入路径（绝对路径；恒为产物目录下的 blueprints.sql） */
+  blueprintsSqlPath: string
   /** 数据质量门跳过的题目 qid（--force 时为空数组） */
   skippedQids: string[]
   /** 实际导入统计（import_runs 行的 stats 同值） */

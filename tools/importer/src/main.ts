@@ -4,8 +4,10 @@
  * 试卷归属清单、db 阶段随之入库 papers/question_papers）。
  * parse 模式：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
  * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
- * （SQL 固定生成至 <产物目录>/import.sql，经 `wrangler d1 execute --file` 应用入库；
- * 产物须含 papers.json——旧产物不含该文件时报 paper_manifest_missing 退出 1，需重新 parse）
+ * （SQL 固定生成至 <产物目录>/import.sql 与 <产物目录>/blueprints.sql（T2-01b 蓝图种子，
+ * 自包含可单独经 `wrangler d1 execute --file` 应用，不必重导全量），均经
+ * `wrangler d1 execute --file` 应用入库；产物须含 papers.json——旧产物不含该文件时
+ * 报 paper_manifest_missing 退出 1，需重新 parse）
  * images 模式：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>]
  * [--bucket <R2 桶名>] [--local] [--concurrency <2-16 默认 4>]
  * （压缩工件写至 <产物目录>/r2/，模块 JSON 图片段 path 原位重写为内容寻址键，
@@ -50,7 +52,7 @@ const USAGE =
   '用法：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录，默认 .import-out>] --version <导入版本号>'
 
 const DB_USAGE =
-  '用法：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]（SQL 生成至 <产物目录>/import.sql）'
+  '用法：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]（SQL 生成至 <产物目录>/import.sql 与 blueprints.sql）'
 
 const IMAGES_USAGE =
   '用法：node dist/main.js images --products <JSON 产物目录> [--input <源仓库目录>] [--bucket <R2 桶名> [--local] [--concurrency <2-16 默认 4>]]（工件写至 <产物目录>/r2/，路径重写写回 modules/*.json，--bucket 启用 R2 上传）'
@@ -221,8 +223,9 @@ function runDbCommand(argv: string[]): number {
     throw err
   }
   console.log(`入库 SQL 已生成：${result.sqlPath}`)
+  console.log(`蓝图种子 SQL 已生成：${result.blueprintsSqlPath}（自包含，可单独执行）`)
   console.log(
-    `导入统计：题目 ${result.stats.questions}，题组 ${result.stats.questionGroups}，试卷 ${result.stats.papers}，归属 ${result.stats.questionPapers}`,
+    `导入统计：题目 ${result.stats.questions}，题组 ${result.stats.questionGroups}，试卷 ${result.stats.papers}，归属 ${result.stats.questionPapers}，蓝图 ${result.stats.blueprints}（明细 ${result.stats.blueprintModules}）`,
   )
   if (result.skippedQids.length > 0) {
     console.error(

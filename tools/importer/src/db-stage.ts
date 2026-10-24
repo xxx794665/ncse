@@ -2,6 +2,12 @@
  * 入库阶段（T1-15）：读 runImport 的 JSON 产物目录，生成确定性幂等 upsert SQL 文件。
  * 生成语义（全部确定性：同产物 + 同 version → SQL 文件逐字节相同）：
  *   a. 分类体系 upsert（exam_types/subjects/modules，id 一律标量子查询解析）；
+ *   a2. 蓝图种子 upsert（T2-01b：blueprints/blueprint_modules，数据源为 shared 的
+ *       XINGCE_BLUEPRINTS 常量——蓝图目录单一权威源；生成前逐条 validateBlueprint，
+ *       problems 非空即抛错（代码级配置错误，fail fast）；孤儿清理先明细后主表，
+ *       且恒限定行测科目（他科目蓝图不受影响）；同段另产出独立自包含 blueprints.sql
+ *       ——含分类体系定位行（blueprint_modules.module_id 经 modules 表解析，缺六模块
+ *       行则标量子查询得 NULL 违反 NOT NULL，故必须随行），远端可轻量单独执行）；
  *   b. 题组 upsert（自然键 module_id + source_key；有效题为空的组不生成）；
  *   c. 题目 upsert（自然键 qid；题组题 group_id 经 source_key 子查询链接，独立题 NULL）；
  *   d. 试卷与归属 upsert（T2-01a/ADR-0012：papers 按 name 幂等 upsert、
@@ -23,11 +29,14 @@
  * 时间一律 strftime 库端表达式；不含绝对路径与时间戳字面量；不写 BEGIN/COMMIT
  * （wrangler d1 execute 按文件分句执行，幂等 upsert 保证中断重跑自愈）。
  * 安全：products 根为受信目录（CLI 显式指定），全部派生读写路径一律经 resolveWithin
- * 界内校验（SQL 固定写回 <产物目录>/import.sql，不做任意路径输出）。
+ * 界内校验（SQL 固定写回 <产物目录>/import.sql 与 <产物目录>/blueprints.sql，
+ * 不做任意路径输出）。
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { XINGCE_BLUEPRINTS, validateBlueprint } from '@ncse/shared'
+import type { BlueprintModulePlan, ExamBlueprint } from '@ncse/shared'
 import { MODULE_FOLDERS, moduleFolderOfCode } from './modules.js'
 import { resolveWithin } from './pipeline.js'
 import type {
@@ -383,6 +392,72 @@ function moduleUpsert(code: ModuleCode, name: string, sortOrder: number): string
   return `INSERT INTO modules (subject_id, code, name, sort_order) VALUES (${XINGCE_SUBJECT_ID}, '${code}', '${name}', ${sortOrder}) ON CONFLICT(subject_id, code) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order, ${UPDATED_AT}`
 }
 
+/** 蓝图 id 的标量子查询（同一行测科目内按 code 定位） */
+function blueprintIdExpr(code: string): string {
+  return `(SELECT id FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} AND code=${sqlString(code)})`
+}
+
+/** a2. 蓝图 upsert（唯一键 subject_id + code；仅更新 name，code 为定位键不动） */
+function blueprintUpsert(blueprint: ExamBlueprint): string {
+  return `INSERT INTO blueprints (subject_id, code, name) VALUES (${XINGCE_SUBJECT_ID}, ${sqlString(blueprint.code)}, ${sqlString(blueprint.name)}) ON CONFLICT(subject_id, code) DO UPDATE SET name=excluded.name, ${UPDATED_AT}`
+}
+
+/** a2. 蓝图模块明细 upsert（唯一键 blueprint_id + module_id；module_id 按 modules.code 定位） */
+function blueprintModuleUpsert(blueprintCode: string, plan: BlueprintModulePlan): string {
+  return `INSERT INTO blueprint_modules (blueprint_id, module_id, question_count, time_limit_minutes) VALUES (${blueprintIdExpr(blueprintCode)}, ${moduleIdExpr(plan.module)}, ${plan.questionCount}, ${plan.timeLimitMinutes}) ON CONFLICT(blueprint_id, module_id) DO UPDATE SET question_count=excluded.question_count, time_limit_minutes=excluded.time_limit_minutes, ${UPDATED_AT}`
+}
+
+/** a2. 孤儿蓝图明细清理（一）：种子蓝图下不在其种子模块集合内的明细删除（镜像孤儿 pair 清理的卷内口径） */
+function orphanBlueprintModuleDelete(blueprint: ExamBlueprint): string {
+  const moduleCodes = blueprint.modules.map((plan) => sqlString(plan.module)).join(', ')
+  return `DELETE FROM blueprint_modules WHERE blueprint_id=${blueprintIdExpr(blueprint.code)} AND module_id NOT IN (SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code IN (${moduleCodes}))`
+}
+
+/** a2. 孤儿蓝图明细清理（二）：行测科目下不在种子蓝图集合的蓝图之明细删除（先明细后主表第一步；限定科目防误删他科目明细，不依赖 FK 级联） */
+function orphanUnknownBlueprintModuleDelete(codes: string[]): string {
+  const codeList = codes.map(sqlString).join(', ')
+  return `DELETE FROM blueprint_modules WHERE blueprint_id IN (SELECT id FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} AND code NOT IN (${codeList}))`
+}
+
+/** a2. 孤儿蓝图清理（三）：行测科目下不在种子集合的蓝图删除（限定科目：他科目蓝图不受影响） */
+function orphanBlueprintDelete(codes: string[]): string {
+  const codeList = codes.map(sqlString).join(', ')
+  return `DELETE FROM blueprints WHERE subject_id=${XINGCE_SUBJECT_ID} AND code NOT IN (${codeList})`
+}
+
+/**
+ * a2. 蓝图种子 SQL 段（T2-01b）：blueprints/blueprint_modules upsert + 孤儿清理（先明细后主表）。
+ * 目录以参数注入（runDbStage 缺省传 shared 的 XINGCE_BLUEPRINTS；测试可注入假目录
+ * 覆盖校验失败路径）；生成前逐条 validateBlueprint，problems 非空抛错（代码级配置
+ * 错误，fail fast）。语句序确定：蓝图序 = 目录序、明细序 = 卷内 modules 序。
+ */
+export function blueprintSeedStatements(blueprints: readonly ExamBlueprint[]): string[] {
+  for (const blueprint of blueprints) {
+    const problems = validateBlueprint(blueprint)
+    if (problems.length > 0) {
+      throw new Error(`蓝图目录校验失败（code=${blueprint.code}）：${problems.join('；')}`)
+    }
+  }
+  if (blueprints.length === 0) {
+    // 空 catalog 无法用 NOT IN 表达种子集合，且 shared 侧 DEFAULT_BLUEPRINT 已保证目录非空——
+    // 到这里即是代码级配置错误，fail fast 而非静默生成非法 SQL
+    throw new Error('蓝图目录为空（XINGCE_BLUEPRINTS 至少应含默认卷型）')
+  }
+  const codes = blueprints.map((blueprint) => blueprint.code)
+  const statements: string[] = []
+  for (const blueprint of blueprints) {
+    statements.push(blueprintUpsert(blueprint))
+    for (const plan of blueprint.modules) {
+      statements.push(blueprintModuleUpsert(blueprint.code, plan))
+    }
+  }
+  for (const blueprint of blueprints) {
+    statements.push(orphanBlueprintModuleDelete(blueprint))
+  }
+  statements.push(orphanUnknownBlueprintModuleDelete(codes), orphanBlueprintDelete(codes))
+  return statements
+}
+
 /** b. 题组 upsert（唯一键 module_id + source_key；year/region/paper_type 可空） */
 function groupUpsert(code: ModuleCode, sourceKey: string, group: DbGroup): string {
   return `INSERT INTO question_groups (module_id, source_key, material, year, region, paper_type) VALUES (${moduleIdExpr(code)}, ${sqlString(sourceKey)}, ${sqlJson(group.material)}, ${sqlNullableInteger(group.year)}, ${sqlNullableString(group.region)}, ${sqlNullableString(group.paperType)}) ON CONFLICT(module_id, source_key) DO UPDATE SET material=excluded.material, year=excluded.year, region=excluded.region, paper_type=excluded.paper_type, ${UPDATED_AT}`
@@ -488,16 +563,23 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
   // ---- 试卷归属产物（T2-01a/ADR-0012）：缺失 → InvalidProductsError（paper_manifest_missing） ----
   const paperProducts = readPaperProducts(productsRoot)
 
-  // ---- SQL 语句序（顺序固定，见文件头注释 a→e） ----
+  // ---- SQL 语句序（顺序固定，见文件头注释 a→f） ----
   const statements: string[] = []
   /** 实际进 SQL 的图片段 path 去重集合（stats.images 口径；含题组材料，重写后为内容寻址键天然去重） */
   const imagePaths = new Set<string>()
 
-  // a. 分类体系 upsert：考试类型、科目、六模块（全量 upsert，与产物模块覆盖面无关）
-  statements.push(examTypeUpsert(), subjectUpsert())
+  // a. 分类体系 upsert：考试类型、科目、六模块（全量 upsert，与产物模块覆盖面无关；
+  //    语句序 = 考试类型 → 科目 → 模块目录序，blueprints.sql 以同一序复用本段）
+  const taxonomyStatements = [examTypeUpsert(), subjectUpsert()]
   for (const folder of MODULE_FOLDERS) {
-    statements.push(moduleUpsert(folder.code, folder.name, folder.sortOrder))
+    taxonomyStatements.push(moduleUpsert(folder.code, folder.name, folder.sortOrder))
   }
+  statements.push(...taxonomyStatements)
+
+  // a2. 蓝图种子 upsert + 孤儿清理（T2-01b）：排在分类体系之后（subject/module 标量子
+  //     查询依赖其行先存在）；数据源为 shared 的 XINGCE_BLUEPRINTS，与产物内容无关
+  const blueprintStatements = blueprintSeedStatements(XINGCE_BLUEPRINTS)
+  statements.push(...blueprintStatements)
 
   // b. 题组 upsert（moduleOrder → 卷序 → 组序）；qid → 所属组 source_key（题目链接依据）
   const groupOfQid = new Map<string, string>()
@@ -578,6 +660,8 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
     knowledgePoints: 0,
     papers: paperProducts.length,
     questionPapers,
+    blueprints: XINGCE_BLUEPRINTS.length,
+    blueprintModules: XINGCE_BLUEPRINTS.reduce((sum, blueprint) => sum + blueprint.modules.length, 0),
   }
   statements.push(importRunUpsert(options.version, inputDigest, stats))
 
@@ -599,13 +683,26 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
     statements.push(orphanPaperDelete(paperNames))
   }
 
-  // ---- 拼装与写出（SQL 固定写回产物目录 import.sql：产物目录即管线工件区，
-  //      输出收敛在受信根内并经 resolveWithin 界内校验；UTF-8 无 BOM、LF、
+  // ---- 拼装与写出（SQL 固定写回产物目录 import.sql 与 blueprints.sql：产物目录即
+  //      管线工件区，输出收敛在受信根内并经 resolveWithin 界内校验；UTF-8 无 BOM、LF、
   //      文件以换行结尾；每条语句一行、以 ';' 结尾） ----
   const header = `-- ncse 导入入库 SQL：version=${options.version}，生成自 import-manifest.json（幂等，可重复执行）`
   const sql = [header, ...statements.map((statement) => `${statement};`)].join('\n') + '\n'
   const sqlPath = resolveWithin(productsRoot, 'import.sql')
   fs.writeFileSync(sqlPath, sql, 'utf8')
 
-  return { sql, sqlPath, skippedQids, stats, inputDigest, issues }
+  // 独立蓝图种子 SQL（T2-01b）：自包含可单独执行——分类体系定位行（exam_types/
+  // subjects/modules，blueprint_modules 的 module_id 子查询依赖六模块行存在）+
+  // 蓝图种子段，语句文本与顺序与 import.sql 内对应段逐字节一致；不含 version 与
+  // import_runs 行，跨版本逐字节稳定（远端轻量执行，不必重导全量 import.sql）
+  const blueprintHeader =
+    '-- ncse 蓝图种子 SQL（自包含：分类体系定位行 + blueprints/blueprint_modules 种子，幂等，可重复执行）'
+  const blueprintsSql =
+    [blueprintHeader, ...[...taxonomyStatements, ...blueprintStatements].map((statement) => `${statement};`)].join(
+      '\n',
+    ) + '\n'
+  const blueprintsSqlPath = resolveWithin(productsRoot, 'blueprints.sql')
+  fs.writeFileSync(blueprintsSqlPath, blueprintsSql, 'utf8')
+
+  return { sql, sqlPath, blueprintsSql, blueprintsSqlPath, skippedQids, stats, inputDigest, issues }
 }
