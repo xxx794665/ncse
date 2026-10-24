@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_BLUEPRINT_CODE, type RichContent, type RichSegment } from '@ncse/shared'
-import { blueprints, examTypes, papers, users } from '../src/db/schema'
+import { blueprints, examTypes, mockSessions, papers, questions, users } from '../src/db/schema'
 import {
   bearerGet,
   bearerPost,
@@ -19,6 +19,7 @@ import {
   insertMockFixture,
   insertMockSessionRow,
   insertPaperRow,
+  mockAnswerRowsOf,
   type MockFixture,
 } from './mock-fixtures'
 
@@ -27,7 +28,8 @@ import {
  * onError 错误信封），D1 为 workerd 内本地实例。夹具链复用 practice-fixtures 内容题库 +
  * mock-fixtures 蓝图/试卷/归属/会话/作答直插（卷题集序刻意与题目 id 大小序不同，
  * 验证快照按 question_papers.sequence 取序）。
- * 作答/计时/交卷端点为后续片——已答态经直插 mock_answers 模拟。
+ * 覆盖生命周期三端点与作答/计时上报两端点（upsert/防回退/已交卷拒绝——交卷即定卷）；
+ * 交卷判分端点为后续片。
  */
 
 /** 测试卷名（mock-fixtures 的 insertMockFixture 固定值，列表/详情字段精确断言共用） */
@@ -357,16 +359,321 @@ describe('GET /api/mock/sessions/:id（会话详情）', () => {
   })
 })
 
-describe('鉴权（三端点）', () => {
+describe('鉴权（五端点）', () => {
   it('缺 token：401 + unauthorized 信封', async () => {
     const outcomes = [
       await requestJson('/api/mock/sessions', postJson({ paperId: fixture.paperId })),
       await requestJson('/api/mock/sessions', { method: 'GET' }),
       await requestJson('/api/mock/sessions/1', { method: 'GET' }),
+      await requestJson('/api/mock/sessions/1/answers', postJson({ questionId: 1, answer: 'A', durationMs: 1000 })),
+      await requestJson('/api/mock/sessions/1/timer', postJson({ elapsedMs: 1000 })),
     ]
     for (const { status, body } of outcomes) {
       expect(status).toBe(401)
       expect(errorField(body).code).toBe('unauthorized')
     }
+  })
+})
+
+describe('作答与计时（T2-01b）', () => {
+  /** 走 POST 建会话真实路径造进行中会话（缺省 7 题快照），返回 token 与 sessionId */
+  async function createInProgressSession(username = 'alice'): Promise<{ token: string; sessionId: number }> {
+    const token = await registerForToken(username)
+    const created = await requestJson('/api/mock/sessions', bearerPost(token, { paperId: fixture.paperId }))
+    expect(created.status).toBe(201)
+    return { token, sessionId: numberField(created.body, 'id') }
+  }
+
+  /** 提交作答（作答端点简写） */
+  function submitAnswer(sessionId: number, token: string, body: unknown) {
+    return requestJson(`/api/mock/sessions/${sessionId}/answers`, bearerPost(token, body))
+  }
+
+  /** 上报计时（计时端点简写） */
+  function reportTimer(sessionId: number, token: string, body: unknown) {
+    return requestJson(`/api/mock/sessions/${sessionId}/timer`, bearerPost(token, body))
+  }
+
+  /* ---------- POST /sessions/:id/answers（逐题作答 upsert） ---------- */
+
+  it('首答：200，mock_answers 行落值 answer/durationMs、判分字段不触碰（isCorrect null），answeredCount 1，响应键集恰为 questionId/answeredCount', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    const questionId = fixture.paperQuestionIds[0]
+
+    const { status, body } = await submitAnswer(sessionId, token, { questionId, answer: 'C', durationMs: 4_200 })
+
+    expect(status).toBe(200)
+    // 轻响应：D4 不回发题目/判分信息（toStrictEqual 连 undefined 键也拒绝）
+    expect(Object.keys(body).sort()).toEqual(['answeredCount', 'questionId'])
+    expect(numberField(body, 'questionId')).toBe(questionId)
+    expect(numberField(body, 'answeredCount')).toBe(1)
+
+    const rows = await mockAnswerRowsOf(sessionId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].questionId).toBe(questionId)
+    expect(rows[0].answer).toBe('C')
+    expect(rows[0].durationMs).toBe(4_200)
+    // 判分字段交卷才落值（isCorrect 可空列保持 null；isTimeout notNull 缺省 false）
+    expect(rows[0].isCorrect).toBeNull()
+    expect(rows[0].isTimeout).toBe(false)
+  })
+
+  it('改答案：同题二次提交覆盖为最新 answer；durationMs 取 max（先 5000 后 3000 → 5000 不缩水；先 3000 后 5000 → 5000）', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    const [first, second] = [fixture.paperQuestionIds[0], fixture.paperQuestionIds[1]]
+
+    // first 题回退方向：5000 → 3000，保留 5000；answer 覆盖为最新
+    const firstSubmit = await submitAnswer(sessionId, token, { questionId: first, answer: 'A', durationMs: 5_000 })
+    expect(firstSubmit.status).toBe(200)
+    const firstRedo = await submitAnswer(sessionId, token, { questionId: first, answer: 'D', durationMs: 3_000 })
+    expect(firstRedo.status).toBe(200)
+
+    // second 题增长方向：3000 → 5000，取 5000
+    await submitAnswer(sessionId, token, { questionId: second, answer: 'B', durationMs: 3_000 })
+    const secondRedo = await submitAnswer(sessionId, token, { questionId: second, answer: 'C', durationMs: 5_000 })
+    expect(numberField(secondRedo.body, 'answeredCount')).toBe(2)
+
+    const rows = await mockAnswerRowsOf(sessionId)
+    expect(rows).toHaveLength(2)
+    const rowOf = (questionId: number) => rows.find((row) => row.questionId === questionId)
+    // answer 最新胜、durationMs 防回退不缩水
+    expect(rowOf(first)).toMatchObject({ answer: 'D', durationMs: 5_000 })
+    expect(rowOf(second)).toMatchObject({ answer: 'C', durationMs: 5_000 })
+  })
+
+  it('每题 upsert 不加行：两题各两次提交 → 行数仍 2、answeredCount 首答后不再变', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    const [first, second] = [fixture.paperQuestionIds[0], fixture.paperQuestionIds[1]]
+
+    // 第一题：首答 1，重提仍是 1（冲突分支不加行，answeredCount 不变）
+    const firstSubmit = await submitAnswer(sessionId, token, { questionId: first, answer: 'A', durationMs: 1_000 })
+    expect(numberField(firstSubmit.body, 'answeredCount')).toBe(1)
+    const firstRedo = await submitAnswer(sessionId, token, { questionId: first, answer: 'B', durationMs: 2_000 })
+    expect(numberField(firstRedo.body, 'answeredCount')).toBe(1)
+
+    // 第二题：首答 2，重提仍是 2
+    const secondSubmit = await submitAnswer(sessionId, token, { questionId: second, answer: 'A', durationMs: 1_000 })
+    expect(numberField(secondSubmit.body, 'answeredCount')).toBe(2)
+    const secondRedo = await submitAnswer(sessionId, token, { questionId: second, answer: 'B', durationMs: 2_000 })
+    expect(numberField(secondRedo.body, 'answeredCount')).toBe(2)
+
+    expect(await mockAnswerRowsOf(sessionId)).toHaveLength(2)
+  })
+
+  it('悬空题目 id（快照内但题目行已删）：404 not_found「题目不存在」', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    // 删快照末题的题目行（question_papers 级联清，会话 JSON 快照保留 id → 悬空）
+    const danglingId = fixture.paperQuestionIds[6]
+    await db.delete(questions).where(eq(questions.id, danglingId))
+
+    const { status, body } = await submitAnswer(sessionId, token, { questionId: danglingId, answer: 'A', durationMs: 1_000 })
+    expect(status).toBe(404)
+    const error = errorField(body)
+    expect(error.code).toBe('not_found')
+    expect(error.message).toBe('题目不存在')
+  })
+
+  it('题目不在会话内（题行存在但未挂卷）：400 bad_request「题目不在会话内」', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    // 政治理论第 6 题在题库但不在 7 题卷快照内（不落「题目不存在」分支）
+    const notInPaper = fixture.content.politicalQuestionIds[5]
+
+    const { status, body } = await submitAnswer(sessionId, token, { questionId: notInPaper, answer: 'A', durationMs: 1_000 })
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toBe('题目不在会话内')
+  })
+
+  it.each([
+    { case: '0', questionId: 0 },
+    { case: '小数 1.5', questionId: 1.5 },
+    { case: '字符串 "1"', questionId: '1' },
+    { case: '缺失', questionId: undefined },
+  ])('questionId 非正整数（$case）：400 bad_request「questionId 必须是正整数」', async ({ questionId }) => {
+    const { token, sessionId } = await createInProgressSession()
+    const { status, body } = await submitAnswer(sessionId, token, { questionId, answer: 'A', durationMs: 1_000 })
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toBe('questionId 必须是正整数')
+  })
+
+  it.each([
+    { case: "选项键外 'E'", answer: 'E' },
+    { case: '非字符串 42', answer: 42 },
+  ])('answer 非选项键（$case）：400 bad_request「answer 必须是题目选项键之一」', async ({ answer }) => {
+    const { token, sessionId } = await createInProgressSession()
+    const { status, body } = await submitAnswer(sessionId, token, {
+      questionId: fixture.paperQuestionIds[0],
+      answer,
+      durationMs: 1_000,
+    })
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toBe('answer 必须是题目选项键之一')
+  })
+
+  it.each([
+    { case: '负数 -1', durationMs: -1 },
+    { case: '恰达上限 86400000', durationMs: 86_400_000 },
+    { case: '非整数 1.5', durationMs: 1.5 },
+  ])('durationMs 越界（$case）：400 bad_request，消息含区间', async ({ durationMs }) => {
+    const { token, sessionId } = await createInProgressSession()
+    const { status, body } = await submitAnswer(sessionId, token, {
+      questionId: fixture.paperQuestionIds[0],
+      answer: 'A',
+      durationMs,
+    })
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toContain('durationMs')
+    expect(error.message).toContain('0 到 86400000')
+  })
+
+  it.each(['submitted', 'abandoned'] as const)(
+    '已交卷会话（%s）作答：400 bad_request「会话已交卷，不可再作答」（交卷即定卷）',
+    async (sessionStatus) => {
+      const token = await registerForToken('alice')
+      const userId = await userIdOf('alice')
+      const sessionId = await insertMockSessionRow({
+        userId,
+        blueprintId: fixture.blueprintId,
+        paperId: fixture.paperId,
+        questionIds: fixture.paperQuestionIds.slice(0, 2),
+        totalMinutes: 10,
+        overrides: { status: sessionStatus },
+      })
+
+      const { status, body } = await submitAnswer(sessionId, token, {
+        questionId: fixture.paperQuestionIds[0],
+        answer: 'A',
+        durationMs: 1_000,
+      })
+      expect(status).toBe(400)
+      const error = errorField(body)
+      expect(error.code).toBe('bad_request')
+      expect(error.message).toBe('会话已交卷，不可再作答')
+      // 拒绝后不落任何作答行
+      expect(await mockAnswerRowsOf(sessionId)).toHaveLength(0)
+    },
+  )
+
+  it('他人会话/不存在 id/非数字 id：404 同文案「会话不存在」（防存在性探测）', async () => {
+    const alice = await createInProgressSession('alice')
+    const tokenBob = await registerForToken('bob')
+    const answerBody = { questionId: fixture.paperQuestionIds[0], answer: 'A', durationMs: 1_000 }
+
+    const foreign = await submitAnswer(alice.sessionId, tokenBob, answerBody)
+    expect(foreign.status).toBe(404)
+    const foreignError = errorField(foreign.body)
+    expect(foreignError.code).toBe('not_found')
+    expect(foreignError.message).toBe('会话不存在')
+
+    const missing = await submitAnswer(999_999, alice.token, answerBody)
+    expect(missing.status).toBe(404)
+    expect(errorField(missing.body).message).toBe('会话不存在')
+
+    const nonNumeric = await requestJson('/api/mock/sessions/abc/answers', bearerPost(alice.token, answerBody))
+    expect(nonNumeric.status).toBe(404)
+    expect(errorField(nonNumeric.body).message).toBe('会话不存在')
+  })
+
+  it('请求体非 JSON 对象（数组）：两端点均 400 bad_request', async () => {
+    const { token, sessionId } = await createInProgressSession()
+    const answer = await requestJson(`/api/mock/sessions/${sessionId}/answers`, bearerPost(token, [1, 2]))
+    expect(answer.status).toBe(400)
+    expect(errorField(answer.body).code).toBe('bad_request')
+
+    const timer = await requestJson(`/api/mock/sessions/${sessionId}/timer`, bearerPost(token, [1, 2]))
+    expect(timer.status).toBe(400)
+    expect(errorField(timer.body).code).toBe('bad_request')
+  })
+
+  /* ---------- POST /sessions/:id/timer（计时上报） ---------- */
+
+  it('首次上报：200 回发 elapsedMs、响应键集恰一项，会话行落值', async () => {
+    const { token, sessionId } = await createInProgressSession()
+
+    const { status, body } = await reportTimer(sessionId, token, { elapsedMs: 61_800 })
+
+    expect(status).toBe(200)
+    expect(Object.keys(body).sort()).toEqual(['elapsedMs'])
+    expect(numberField(body, 'elapsedMs')).toBe(61_800)
+
+    const sessionRow = (
+      await db.select({ elapsedMs: mockSessions.elapsedMs }).from(mockSessions).where(eq(mockSessions.id, sessionId))
+    ).at(0)
+    expect(sessionRow?.elapsedMs).toBe(61_800)
+  })
+
+  it('回退上报不缩水：先 60000 后 30000 → 回发与落库均 60000（服务端 max 防回退）', async () => {
+    const { token, sessionId } = await createInProgressSession()
+
+    const first = await reportTimer(sessionId, token, { elapsedMs: 60_000 })
+    expect(first.status).toBe(200)
+    expect(numberField(first.body, 'elapsedMs')).toBe(60_000)
+
+    const regressed = await reportTimer(sessionId, token, { elapsedMs: 30_000 })
+    expect(regressed.status).toBe(200)
+    expect(numberField(regressed.body, 'elapsedMs')).toBe(60_000)
+
+    const sessionRow = (
+      await db.select({ elapsedMs: mockSessions.elapsedMs }).from(mockSessions).where(eq(mockSessions.id, sessionId))
+    ).at(0)
+    expect(sessionRow?.elapsedMs).toBe(60_000)
+  })
+
+  it.each([
+    { case: '负数 -1', elapsedMs: -1 },
+    { case: '恰达上限 86400000', elapsedMs: 86_400_000 },
+    { case: '非整数 1.5', elapsedMs: 1.5 },
+  ])('计时 elapsedMs 越界（$case）：400 bad_request，消息含区间', async ({ elapsedMs }) => {
+    const { token, sessionId } = await createInProgressSession()
+    const { status, body } = await reportTimer(sessionId, token, { elapsedMs })
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toContain('elapsedMs')
+    expect(error.message).toContain('0 到 86400000')
+  })
+
+  it.each(['submitted', 'abandoned'] as const)(
+    '已交卷会话（%s）上报计时：400 bad_request「会话已交卷，不可更新计时」',
+    async (sessionStatus) => {
+      const token = await registerForToken('alice')
+      const userId = await userIdOf('alice')
+      const sessionId = await insertMockSessionRow({
+        userId,
+        blueprintId: fixture.blueprintId,
+        paperId: fixture.paperId,
+        questionIds: fixture.paperQuestionIds.slice(0, 2),
+        totalMinutes: 10,
+        overrides: { status: sessionStatus },
+      })
+
+      const { status, body } = await reportTimer(sessionId, token, { elapsedMs: 60_000 })
+      expect(status).toBe(400)
+      const error = errorField(body)
+      expect(error.code).toBe('bad_request')
+      expect(error.message).toBe('会话已交卷，不可更新计时')
+    },
+  )
+
+  it('计时上报他人会话/非数字 id：404 同文案「会话不存在」（防存在性探测）', async () => {
+    const alice = await createInProgressSession('alice')
+    const tokenBob = await registerForToken('bob')
+
+    const foreign = await reportTimer(alice.sessionId, tokenBob, { elapsedMs: 60_000 })
+    expect(foreign.status).toBe(404)
+    const foreignError = errorField(foreign.body)
+    expect(foreignError.code).toBe('not_found')
+    expect(foreignError.message).toBe('会话不存在')
+
+    const nonNumeric = await requestJson('/api/mock/sessions/abc/timer', bearerPost(alice.token, { elapsedMs: 60_000 }))
+    expect(nonNumeric.status).toBe(404)
+    expect(errorField(nonNumeric.body).message).toBe('会话不存在')
   })
 })

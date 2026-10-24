@@ -162,3 +162,11 @@ export async function insertMockAnswerRow(
     ...(overrides.isCorrect === undefined ? {} : { isCorrect: overrides.isCorrect }),
   })
 }
+
+/** mock_answers 行（直查断言用，列类型由 schema 推导） */
+export type MockAnswerRow = typeof mockAnswers.$inferSelect
+
+/** 直查会话内全部作答行（作答端点的落库断言用，questionId 升序——每题至多一行，键即序） */
+export async function mockAnswerRowsOf(sessionId: number): Promise<MockAnswerRow[]> {
+  return db.select().from(mockAnswers).where(eq(mockAnswers.sessionId, sessionId)).orderBy(mockAnswers.questionId)
+}

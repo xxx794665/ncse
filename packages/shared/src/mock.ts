@@ -1,8 +1,8 @@
 /**
  * 整卷模考推导与 DTO（T2-01b，M2 拆片定稿 D2/D3/D4/D6）：
  * 试卷完整度分档（D2）与默认整卷时长推导（D3）为纯函数——前后端共用同一口径，勿单方改阈值；
- * DTO 覆盖试卷目录与模考会话生命周期（建会话/列表/详情）。
- * 作答/计时/交卷 DTO 由后续片在本文件追加（MockAnsweredInfo 已为其预留落位）。
+ * DTO 覆盖试卷目录、模考会话生命周期（建会话/列表/详情）与作答/计时上报。
+ * 交卷 DTO 由后续片在本文件追加（MockAnsweredInfo 已为其预留落位）。
  * 类型依赖 index.ts 的数据层同构类型（type-only 导入，编译后无运行时循环）。
  */
 import type { XingceModuleCode } from './blueprint.js'
@@ -141,4 +141,57 @@ export interface MockSessionSummary {
   answeredCount: number
   /** 创建时间（ISO-8601 UTC） */
   createdAt: string
+}
+
+/* ============ 作答与计时上报 DTO（T2-01b 第四子片，D4/D6） ============ */
+
+/**
+ * 用时类数值的合法上限（毫秒）：24 小时——与练习域 MAX_DURATION_MS 同上限惯例，
+ * 防把时间戳等荒谬值当用时落库。每题 durationMs 与会话 elapsedMs 共用本上限
+ * （均为 [0, MOCK_MAX_DURATION_MS) 整数区间）。
+ */
+export const MOCK_MAX_DURATION_MS = 24 * 60 * 60 * 1000
+
+/**
+ * POST /api/mock/sessions/:id/answers 请求体（逐题作答，D4：作答中不判分不下发答案/解析）。
+ * questionId 不属于该会话快照清单、answer 非该题选项键、durationMs 超出
+ * [0, MOCK_MAX_DURATION_MS) 整数区间时均 400（不落库）；会话非 in_progress 时 400。
+ */
+export interface SubmitMockAnswerRequest {
+  /** 题目 id（正整数，须属于会话 questionIds 快照清单） */
+  questionId: number
+  /** 用户作答（单选为选项键，如 'A'；须是该题 options[].key 之一） */
+  answer: string
+  /**
+   * 本题停留用时累计的绝对值（毫秒）：前端跨多次进入/切题累计后上报，
+   * 服务端对既有行取 max 落库——防乱序/重复上报回退缩水与重复累计。
+   */
+  durationMs: number
+}
+
+/**
+ * POST /api/mock/sessions/:id/answers 响应体（轻响应）：
+ * 不回发题目详情，前端 react-query invalidate 会话详情重新拉取（answered 回显走详情端点）。
+ */
+export interface SubmitMockAnswerResponse {
+  /** 题目 id（回显请求值） */
+  questionId: number
+  /** 作答后会话内已答题目数（mock_answers 行数） */
+  answeredCount: number
+}
+
+/**
+ * POST /api/mock/sessions/:id/timer 请求体（计时上报，D6：累计绝对值口径）。
+ * 服务端不做墙钟推导，跨设备续考以 mock_sessions.elapsedMs 恢复基线；
+ * elapsedMs 超出 [0, MOCK_MAX_DURATION_MS) 整数区间 400；会话非 in_progress 时 400。
+ */
+export interface UpdateMockTimerRequest {
+  /** 计时累计（毫秒，整数，0 ≤ 值 < MOCK_MAX_DURATION_MS；前端累计绝对值） */
+  elapsedMs: number
+}
+
+/** POST /api/mock/sessions/:id/timer 响应体：服务端 max 防回退后的落库值，前端据回发值校准本地基线 */
+export interface UpdateMockTimerResponse {
+  /** 计时累计落库值（毫秒，与请求值的较大者——防回退） */
+  elapsedMs: number
 }
