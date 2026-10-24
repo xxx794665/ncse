@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import {
   classifyPaperCompleteness,
   DEFAULT_BLUEPRINT_CODE,
@@ -15,6 +15,7 @@ import type {
   BlueprintModulePlan,
   ExamBlueprint,
   MockAnsweredInfo,
+  MockHistoryItem,
   MockModuleReport,
   MockQuestionDto,
   MockReportQuestionItem,
@@ -63,7 +64,11 @@ import type { AppEnv } from '../types'
  *   ——模考答对非重做场景）、会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
  *   practice_records（D9，mock_answers 独立承载）；无请求体入参，响应即成绩单（与 report 同形状）；
  * - GET /sessions/:id/report：成绩单聚合（summary/modules/questions 全部从库重算，交卷后可随时
- *   回看；逐题项不含正确答案与解析——展示解析走既有题目详情或后续需求）。
+ *   回看；逐题项不含正确答案与解析——展示解析走既有题目详情或后续需求）；
+ * - GET /history：模考历史列表（T2-01e，前端 F2-4 纵向对比）——本人全部已交卷会话的概要一次
+ *   下发（卷名/年份/时长/计时/交卷时间 + summary 六数批量一条 SQL 聚合，不逐会话重算逐题成绩单），
+ *   submittedAt 倒序（id 倒序并列稳定）；abandoned 不入历史（未判分无成绩）；逐题/分模块明细
+ *   不做（走既有 report 端点）；summary 口径与 report 一致，唯 total 取快照长度的近似见端点注释。
  * 全端点 requireAuth；业务错误一律抛 HTTPException（中文 message），
  * 由组合根 onError 统一收敛为 ApiErrorBody（沿用既有错误码，不新增）。
  */
@@ -466,6 +471,22 @@ async function buildSessionReport(
   }
 
   return { summary, modules, questions }
+}
+
+/**
+ * 历史列表 summary 的批量聚合行（GET /history 用，mock_answers 按 sessionId GROUP BY 产出；
+ * 口径与 buildSessionReport 一致：已答 = isCorrect 非空行，correct/超时/用时同基只计已判分行）。
+ * total/unanswered 不在此（未答题无 mock_answers 行），由会话快照长度在 JS 侧算。
+ */
+interface HistorySummaryAggregate {
+  /** 已答题数（is_correct 非空行数；COUNT(列) 天然忽略 NULL） */
+  answered: number
+  /** 答对题数（SUM 忽略 NULL，恰为已判分行中 true 的计数；全空组 COALESCE 归 0） */
+  correct: number
+  /** 超时题数（仅已判分行计入——防御脏数据未判分但 isTimeout 置位的行不混入） */
+  timeoutCount: number
+  /** 已判分行用时合计（毫秒） */
+  totalDurationMs: number
 }
 
 export const mockRoute = new Hono<AppEnv>()
@@ -895,5 +916,96 @@ mockRoute.get('/sessions/:id/report', async (c) => {
   }
 
   const body = await buildSessionReport(db, session)
+  return c.json(body, 200)
+})
+
+// 路径段 /history 与 /sessions 不同，不会被 /sessions/:id 抢先匹配（:id 校验在各自 handler 内）
+mockRoute.get('/history', async (c) => {
+  const authUser = c.get('authUser')
+  const db = createDb(c.env)
+
+  // 本人全部已交卷会话概要（abandoned 不入历史——未判分无成绩）；submittedAt 非空并入归属条件
+  //（status 与 submittedAt 由交卷端点同笔落值，直插/脏数据致空时排除，保证 DTO 的 submittedAt 恒
+  // string）；paper 行由建会话 restrict 保证存在，innerJoin 取卷名/年份。
+  const sessions = await db
+    .select({
+      id: mockSessions.id,
+      paperId: papers.id,
+      paperName: papers.name,
+      paperYear: papers.year,
+      totalMinutes: mockSessions.totalMinutes,
+      elapsedMs: mockSessions.elapsedMs,
+      submittedAt: mockSessions.submittedAt,
+      // total 近似口径：快照长度（json_array_length），不校验题目行存在性——逐会话批量校验昂贵；
+      // report 侧 total 为快照内实际存在题目行数，差异仅在内容重删致题目悬空的罕见态
+      //（悬空题计 total 不计 answered → unanswered 偏大），纵向对比场景可接受（见 shared 注释）。
+      total: sql<number>`json_array_length(${mockSessions.questionIds})`,
+    })
+    .from(mockSessions)
+    .innerJoin(papers, eq(papers.id, mockSessions.paperId))
+    .where(
+      and(
+        eq(mockSessions.userId, authUser.id),
+        eq(mockSessions.status, 'submitted'),
+        isNotNull(mockSessions.submittedAt),
+      ),
+    )
+    // submittedAt 倒序（最近交卷在前）；id 倒序兜底：并列 submittedAt 保持稳定序（列表端点惯例）
+    .orderBy(desc(mockSessions.submittedAt), desc(mockSessions.id))
+
+  // summary 四数批量一条 SQL 聚合（不逐会话调 buildSessionReport——那是逐题聚合，历史只要六数）：
+  // mock_answers 按 sessionId GROUP BY，已答 = is_correct 非空行（与 report 一致：交卷后已答行
+  // isCorrect 恒非空），correct/超时/用时同基只计已判分行；未答题无行、total/unanswered 由快照
+  // 长度在 JS 侧算。历史会话数随时间增长 → inArray 分批（D1 100 绑定参数上限；批间 sessionId
+  // 不相交，GROUP BY 结果合并安全）；D1 SUM 对全 NULL 组返回 null → COALESCE 归 0；
+  // 无作答行的会话无组行，取缺省 0。
+  const summaryBySession = new Map<number, HistorySummaryAggregate>()
+  for (const batch of chunked(
+    sessions.map((session) => session.id),
+    D1_PARAM_BATCH_SIZE,
+  )) {
+    const rows = await db
+      .select({
+        sessionId: mockAnswers.sessionId,
+        answered: sql<number>`COUNT(${mockAnswers.isCorrect})`,
+        correct: sql<number>`COALESCE(SUM(${mockAnswers.isCorrect}), 0)`,
+        timeoutCount: sql<number>`COALESCE(SUM(CASE WHEN ${mockAnswers.isCorrect} IS NOT NULL AND ${mockAnswers.isTimeout} THEN 1 ELSE 0 END), 0)`,
+        totalDurationMs: sql<number>`COALESCE(SUM(CASE WHEN ${mockAnswers.isCorrect} IS NOT NULL THEN ${mockAnswers.durationMs} ELSE 0 END), 0)`,
+      })
+      .from(mockAnswers)
+      .where(inArray(mockAnswers.sessionId, batch))
+      .groupBy(mockAnswers.sessionId)
+    for (const { sessionId, ...aggregate } of rows) {
+      summaryBySession.set(sessionId, aggregate)
+    }
+  }
+
+  const body: MockHistoryItem[] = []
+  for (const session of sessions) {
+    // isNotNull 已在查询条件里，此处判空仅作 TS 收窄（drizzle 不据 SQL 条件收窄列类型）
+    if (session.submittedAt === null) {
+      continue
+    }
+    const aggregate = summaryBySession.get(session.id)
+    const answered = aggregate?.answered ?? 0
+    body.push({
+      id: session.id,
+      paperId: session.paperId,
+      paperName: session.paperName,
+      paperYear: session.paperYear,
+      totalMinutes: session.totalMinutes,
+      elapsedMs: session.elapsedMs,
+      submittedAt: session.submittedAt,
+      summary: {
+        total: session.total,
+        answered,
+        correct: aggregate?.correct ?? 0,
+        // 未答 = 快照长度 - 已答；脏数据下已答超快照长度（理论不可达）时钳 ≥0 防 UI 负数
+        unanswered: Math.max(0, session.total - answered),
+        timeoutCount: aggregate?.timeoutCount ?? 0,
+        totalDurationMs: aggregate?.totalDurationMs ?? 0,
+      },
+    })
+  }
   return c.json(body, 200)
 })

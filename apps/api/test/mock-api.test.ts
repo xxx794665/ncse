@@ -1164,3 +1164,149 @@ describe('D1 绑定参数分批（T2-01b 热修）', () => {
     expect(questionList(submitted.body)).toHaveLength(120)
   })
 })
+
+describe('历史列表（T2-01e）', () => {
+  /**
+   * 直插历史列表夹具会话：缺省 status submitted + 7 题快照 + totalMinutes 10
+   * （elapsedMs/submittedAt/题数/状态按 overrides 覆盖；submitted 会话的作答行另经
+   * insertMockAnswerRow 直插——isCorrect/isTimeout 显式落值模拟交卷后已判分态）。
+   */
+  async function insertHistorySession(
+    userId: number,
+    overrides: {
+      status?: 'in_progress' | 'submitted' | 'abandoned'
+      submittedAt?: string
+      elapsedMs?: number
+      totalMinutes?: number
+      questionCount?: number
+    } = {},
+  ): Promise<number> {
+    return insertMockSessionRow({
+      userId,
+      blueprintId: fixture.blueprintId,
+      paperId: fixture.paperId,
+      questionIds: fixture.paperQuestionIds.slice(0, overrides.questionCount ?? 7),
+      totalMinutes: overrides.totalMinutes ?? 10,
+      overrides: {
+        status: overrides.status ?? 'submitted',
+        submittedAt: overrides.submittedAt,
+        elapsedMs: overrides.elapsedMs,
+      },
+    })
+  }
+
+  it('空历史（本人无任何会话）：200 空数组', async () => {
+    const token = await registerForToken('alice')
+    const { status, body } = await requestJson('/api/mock/history', bearerGet(token))
+    expect(status).toBe(200)
+    expect(body).toEqual([])
+  })
+
+  it('缺 token：401 + unauthorized 信封', async () => {
+    const { status, body } = await requestJson('/api/mock/history', { method: 'GET' })
+    expect(status).toBe(401)
+    expect(errorField(body).code).toBe('unauthorized')
+  })
+
+  it('单条 submitted 会话：概要六数精确（未答=total-answered、超时与用时只计已判分行），卷名/年份/时长/计时/交卷时间正确', async () => {
+    const token = await registerForToken('alice')
+    const userId = await userIdOf('alice')
+    const [correctFirst, correctSecond, wrongTimeout, wrong] = fixture.paperQuestionIds
+    const sessionId = await insertHistorySession(userId, {
+      submittedAt: '2026-10-20T05:00:00.000Z',
+      elapsedMs: 123_456,
+      totalMinutes: 30,
+      questionCount: 5,
+    })
+    await insertMockAnswerRow(sessionId, correctFirst, { answer: 'B', durationMs: 4_000, isCorrect: true })
+    await insertMockAnswerRow(sessionId, correctSecond, { answer: 'B', durationMs: 5_000, isCorrect: true })
+    await insertMockAnswerRow(sessionId, wrongTimeout, { answer: 'A', durationMs: 25_000, isCorrect: false, isTimeout: true })
+    await insertMockAnswerRow(sessionId, wrong, { answer: 'A', durationMs: 6_000, isCorrect: false })
+    // 快照第 5 题未答（无作答行）
+
+    const { status, body } = await requestJson('/api/mock/history', bearerGet(token))
+    expect(status).toBe(200)
+    expect(body).toEqual([
+      {
+        id: sessionId,
+        paperId: fixture.paperId,
+        paperName: PAPER_NAME,
+        paperYear: 2026,
+        totalMinutes: 30,
+        elapsedMs: 123_456,
+        submittedAt: '2026-10-20T05:00:00.000Z',
+        summary: { total: 5, answered: 4, correct: 2, unanswered: 1, timeoutCount: 1, totalDurationMs: 40_000 },
+      },
+    ])
+  })
+
+  it('多会话 submittedAt 倒序（并列 id 倒序稳定）；in_progress 与 abandoned 不出现（abandoned 未判分无成绩）', async () => {
+    const token = await registerForToken('alice')
+    const userId = await userIdOf('alice')
+    const oldest = await insertHistorySession(userId, { submittedAt: '2026-10-20T01:00:00.000Z' })
+    const newer = await insertHistorySession(userId, { submittedAt: '2026-10-20T02:00:00.000Z' })
+    // 并列 submittedAt：后插 id 更大，排前（id 倒序兜底）
+    const tie = await insertHistorySession(userId, { submittedAt: '2026-10-20T02:00:00.000Z' })
+    await insertHistorySession(userId, { status: 'in_progress' })
+    await insertHistorySession(userId, { status: 'abandoned' })
+
+    const { status, body } = await requestJson('/api/mock/history', bearerGet(token))
+    expect(status).toBe(200)
+    const rows = body as unknown as { id: number }[]
+    expect(rows).toHaveLength(3)
+    expect(rows.map((row) => row.id)).toEqual([tie, newer, oldest])
+  })
+
+  it('多用户隔离：本人只见自己的 submitted 历史，他人会话不可见', async () => {
+    const tokenAlice = await registerForToken('alice')
+    await registerForToken('bob')
+    const aliceSession = await insertHistorySession(await userIdOf('alice'), { submittedAt: '2026-10-20T01:00:00.000Z' })
+    await insertHistorySession(await userIdOf('bob'), { submittedAt: '2026-10-20T02:00:00.000Z' })
+
+    const aliceList = await requestJson('/api/mock/history', bearerGet(tokenAlice))
+    expect(aliceList.status).toBe(200)
+    expect((aliceList.body as unknown as { id: number }[]).map((row) => row.id)).toEqual([aliceSession])
+  })
+
+  it('isCorrect null 行不计 answered/correct/timeoutCount/totalDurationMs（脏数据/中断态防御，口径与 report 一致）', async () => {
+    const token = await registerForToken('alice')
+    const userId = await userIdOf('alice')
+    const [graded, ungraded] = fixture.paperQuestionIds
+    const sessionId = await insertHistorySession(userId, { submittedAt: '2026-10-20T05:00:00.000Z', questionCount: 3 })
+    await insertMockAnswerRow(sessionId, graded, { answer: 'B', durationMs: 4_000, isCorrect: true })
+    // 未判分行（isCorrect null）：交卷后已答行理论恒非空，此处直插模拟脏数据/中断态——超时与用时均不得计入
+    await insertMockAnswerRow(sessionId, ungraded, { answer: 'A', durationMs: 9_999, isTimeout: true })
+
+    const { status, body } = await requestJson('/api/mock/history', bearerGet(token))
+    expect(status).toBe(200)
+    const rows = body as unknown as { summary: Record<string, number> }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].summary).toEqual({
+      total: 3,
+      answered: 1,
+      correct: 1,
+      unanswered: 2,
+      timeoutCount: 0,
+      totalDurationMs: 4_000,
+    })
+  })
+
+  it('无作答行的 submitted 会话：summary 四数全 0、unanswered=total（D1 SUM 空集缺省归 0）', async () => {
+    const token = await registerForToken('alice')
+    const userId = await userIdOf('alice')
+    await insertHistorySession(userId, { submittedAt: '2026-10-20T05:00:00.000Z', questionCount: 4 })
+
+    const { status, body } = await requestJson('/api/mock/history', bearerGet(token))
+    expect(status).toBe(200)
+    const rows = body as unknown as { summary: Record<string, number> }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].summary).toEqual({
+      total: 4,
+      answered: 0,
+      correct: 0,
+      unanswered: 4,
+      timeoutCount: 0,
+      totalDurationMs: 0,
+    })
+  })
+})

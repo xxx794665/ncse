@@ -143,6 +143,8 @@ export interface MockSessionOverrides {
   status?: 'in_progress' | 'submitted' | 'abandoned'
   elapsedMs?: number
   createdAt?: string
+  /** 交卷时间（历史列表夹具的排序锚；缺省不落值） */
+  submittedAt?: string
 }
 
 /** 直插一条模考会话（绕过 POST，用于列表/详情夹具），返回 mock_sessions.id */
@@ -165,6 +167,7 @@ export async function insertMockSessionRow(input: {
       elapsedMs: input.overrides?.elapsedMs,
       status: input.overrides?.status,
       createdAt: input.overrides?.createdAt,
+      submittedAt: input.overrides?.submittedAt,
     })
     .returning({ id: mockSessions.id })
   const id = rows.at(0)?.id
@@ -177,6 +180,8 @@ export interface MockAnswerOverrides {
   answer?: string
   durationMs?: number
   isCorrect?: boolean
+  /** 超时标记（历史列表/判分测试直插已判分行用；缺省走库缺省 false） */
+  isTimeout?: boolean
 }
 
 /** 直插一条模考作答行（已答回显/已答计数夹具；isCorrect 显式落值用于验证判分字段不下发） */
@@ -191,6 +196,7 @@ export async function insertMockAnswerRow(
     answer: overrides.answer ?? 'A',
     durationMs: overrides.durationMs ?? 3000,
     ...(overrides.isCorrect === undefined ? {} : { isCorrect: overrides.isCorrect }),
+    ...(overrides.isTimeout === undefined ? {} : { isTimeout: overrides.isTimeout }),
   })
 }
 

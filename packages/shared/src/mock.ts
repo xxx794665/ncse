@@ -270,3 +270,36 @@ export interface MockSessionReport {
   /** 逐题项（序 = questionIds 快照序 = 开考时卷内题序；悬空 id 跳过） */
   questions: MockReportQuestionItem[]
 }
+
+/* ============ 模考历史列表 DTO（T2-01e，前端「模考历史：历次成绩与纵向对比」F2-4） ============ */
+
+/**
+ * GET /api/mock/history 列表项（本人全部已交卷会话的概要，T2-01e）。
+ * 一次拿回全部 submitted 会话的概要聚合，支撑历次成绩纵向对比；逐题/分模块明细刻意不做
+ * （走既有 GET /api/mock/sessions/:id/report）；abandoned 不入历史（未判分无成绩）。
+ * 排序 submittedAt 倒序（最近交卷在前），id 倒序并列稳定。
+ */
+export interface MockHistoryItem {
+  /** 会话 id */
+  id: number
+  /** 所考试卷 id（papers 表主键；建会话 restrict 保证行存在） */
+  paperId: number
+  /** 卷名 */
+  paperName: string
+  /** 卷年份（null = 未标定） */
+  paperYear: number | null
+  /** 开考锁定的整卷时长（分钟） */
+  totalMinutes: number
+  /** 计时累计（毫秒；交卷即定卷，此后不再变化） */
+  elapsedMs: number
+  /** 交卷时间（ISO-8601 UTC；列表排序锚） */
+  submittedAt: string
+  /**
+   * 成绩概要（复用成绩单总览六数，answered/correct/timeoutCount/totalDurationMs 口径与
+   * MockSessionReport.summary 完全一致：已答 = isCorrect 非空行，超时与用时同基只计已判分行）。
+   * 唯一近似在 total：本列表取 questionIds 快照长度（不校验题目行存在性——逐会话批量校验昂贵），
+   * report 侧为快照内实际存在题目行数；差异仅在「内容重删致快照题悬空」的罕见态——悬空题
+   * 计 total 不计 answered，故本列表 total 与 unanswered 各偏大悬空题数，纵向对比场景可接受。
+   */
+  summary: MockReportSummary
+}
