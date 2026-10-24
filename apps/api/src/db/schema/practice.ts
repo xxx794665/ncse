@@ -1,7 +1,7 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import type { MockSessionStatus, PracticeMode, PracticeSessionStatus, WrongBookStatus, XingceModuleCode } from '@ncse/shared'
 import { users } from './account'
-import { blueprints, questions } from './content'
+import { blueprints, papers, questions } from './content'
 import { createdAt, updatedAt } from './common'
 
 /**
@@ -65,7 +65,10 @@ export const practiceSessions = sqliteTable(
   (table) => [index('practice_sessions_user_status_idx').on(table.userId, table.status)],
 )
 
-/** 整卷模拟会话头：挂卷型蓝图；in_progress 状态的会话即「可中断续做」的载体（续做重新进入） */
+/**
+ * 整卷模拟会话头（M2 拆片定稿 D3/D6/D7）：挂试卷（ADR-0012）+ 题目清单快照 + 计时累计；
+ * in_progress 状态的会话即「可中断续做」的载体（续做重新进入）。
+ */
 export const mockSessions = sqliteTable(
   'mock_sessions',
   {
@@ -73,10 +76,33 @@ export const mockSessions = sqliteTable(
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    /** 删除使用中的蓝图会破坏历史成绩，故 restrict：须先处理会话再删蓝图 */
+    /**
+     * 卷型蓝图（分析锚）：删除使用中的蓝图会破坏历史成绩，故 restrict：须先处理会话再删蓝图。
+     * D7 起蓝图不再提供整卷题集（改挂 papers），本列保留供交卷判分按蓝图每题时限标记
+     * mock_answers.is_timeout，仅供成绩单分析。
+     */
     blueprintId: integer('blueprint_id')
       .notNull()
       .references(() => blueprints.id, { onDelete: 'restrict' }),
+    /**
+     * 会话挂的试卷（D7）：删除使用中的试卷须先处理会话（进行中会话与历史成绩不受卷内容
+     * 重导入牵连），故 restrict——同 blueprintId 哲学。
+     */
+    paperId: integer('paper_id')
+      .notNull()
+      .references(() => papers.id, { onDelete: 'restrict' }),
+    /**
+     * 题目清单快照（D7，与 practice_sessions.questionIds 同哲学）：开考时固化整卷题集，
+     * 服务端权威；序 = question_papers.sequence 卷内序；卷内容重导入不牵连进行中会话与历史成绩。
+     */
+    questionIds: text('question_ids', { mode: 'json' }).$type<number[]>().notNull(),
+    /** 开考锁定的整卷时长（分钟，D3）：开考前可调（默认按题数推导：1 题/分钟向上取整到 5 分钟），开考即固化 */
+    totalMinutes: integer('total_minutes').notNull(),
+    /**
+     * 计时累计（毫秒，D6）：前端上报的累计已用时长绝对值（中断/切设备不烧时间），
+     * 跨设备续考以本列恢复基线；服务端不做墙钟推导。
+     */
+    elapsedMs: integer('elapsed_ms').notNull().default(0),
     status: text('status').notNull().default('in_progress').$type<MockSessionStatus>(),
     /** 交卷时间（空 = 未交卷） */
     submittedAt: text('submitted_at'),
