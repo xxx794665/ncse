@@ -143,6 +143,22 @@ function toPaperSummary(row: PaperRow): PaperSummary {
   return { ...row, completeness: classifyPaperCompleteness(row.questionCount) }
 }
 
+/**
+ * D1 绑定参数分批上限：Cloudflare D1 每查询最多 100 个绑定参数（线上实测 135 题整卷的
+ * inArray 即触限报「Failed query」；本地 miniflare 模拟无此限制，集成测试防不住——
+ * 整卷快照 100+ 题的 inArray 查询必须分批，批大小为 inArray 之外的其余绑定参数留余量）。
+ */
+const D1_PARAM_BATCH_SIZE = 90
+
+/** 按固定批大小切分列表（尾批可短；空列表返回空批数组，调用方循环天然短路） */
+function chunked<T>(list: readonly T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < list.length; i += size) {
+    chunks.push(list.slice(i, i + size))
+  }
+  return chunks
+}
+
 /** 模考题目行的对外投影输入（answer/analysis 刻意不取——D4 交卷统一判分） */
 interface MockQuestionRow {
   id: number
@@ -153,30 +169,32 @@ interface MockQuestionRow {
 }
 
 /** 按题目清单批量取题目行并映射 id → 行（innerJoin modules 取 moduleCode；
- * 模块行随内容重删级联删题，悬空 id 由调用方跳过） */
+ * 模块行随内容重删级联删题，悬空 id 由调用方跳过。
+ * 整卷 100+ 题 → inArray 分批（D1 100 绑定参数上限，见 D1_PARAM_BATCH_SIZE），多批结果合并） */
 async function fetchQuestionRows(db: DbClient, questionIds: number[]): Promise<Map<number, MockQuestionRow>> {
-  if (questionIds.length === 0) {
-    return new Map()
+  const map = new Map<number, MockQuestionRow>()
+  for (const batch of chunked(questionIds, D1_PARAM_BATCH_SIZE)) {
+    const rows = await db
+      .select({
+        id: questions.id,
+        moduleCode: modules.code,
+        kind: questions.kind,
+        stem: questions.stem,
+        options: questions.options,
+      })
+      .from(questions)
+      .innerJoin(modules, eq(modules.id, questions.moduleId))
+      .where(inArray(questions.id, batch))
+    for (const row of rows) {
+      map.set(
+        row.id,
+        // modules.code 库层为无域类型的 TEXT（M1 内容域即行测模块编码），读取处按域值断言
+        //（与 practice_sessions.moduleCode 的 $type<XingceModuleCode> 同一约定，见 wrong-book.ts）
+        { ...row, moduleCode: row.moduleCode as XingceModuleCode },
+      )
+    }
   }
-  const rows = await db
-    .select({
-      id: questions.id,
-      moduleCode: modules.code,
-      kind: questions.kind,
-      stem: questions.stem,
-      options: questions.options,
-    })
-    .from(questions)
-    .innerJoin(modules, eq(modules.id, questions.moduleId))
-    .where(inArray(questions.id, questionIds))
-  return new Map(
-    rows.map((row) => [
-      row.id,
-      // modules.code 库层为无域类型的 TEXT（M1 内容域即行测模块编码），读取处按域值断言
-      //（与 practice_sessions.moduleCode 的 $type<XingceModuleCode> 同一约定，见 wrong-book.ts）
-      { ...row, moduleCode: row.moduleCode as XingceModuleCode },
-    ]),
-  )
+  return map
 }
 
 /** 作答/计时/交卷/成绩单端点共用的会话头取行（status 与 questionIds/blueprintId 即校验与判分所需的全部列） */
@@ -225,16 +243,15 @@ async function fetchAnsweredByQuestion(
   questionIds: number[],
 ): Promise<Map<number, MockAnsweredInfo>> {
   const map = new Map<number, MockAnsweredInfo>()
-  if (questionIds.length === 0) {
-    return map
-  }
-  const rows = await db
-    .select({ questionId: mockAnswers.questionId, answer: mockAnswers.answer, durationMs: mockAnswers.durationMs })
-    .from(mockAnswers)
-    .where(and(eq(mockAnswers.sessionId, sessionId), inArray(mockAnswers.questionId, questionIds)))
-  for (const row of rows) {
-    if (row.answer !== null) {
-      map.set(row.questionId, { answer: row.answer, durationMs: row.durationMs })
+  for (const batch of chunked(questionIds, D1_PARAM_BATCH_SIZE)) {
+    const rows = await db
+      .select({ questionId: mockAnswers.questionId, answer: mockAnswers.answer, durationMs: mockAnswers.durationMs })
+      .from(mockAnswers)
+      .where(and(eq(mockAnswers.sessionId, sessionId), inArray(mockAnswers.questionId, batch)))
+    for (const row of rows) {
+      if (row.answer !== null) {
+        map.set(row.questionId, { answer: row.answer, durationMs: row.durationMs })
+      }
     }
   }
   return map
@@ -277,23 +294,25 @@ interface GradingQuestionRow {
 }
 
 /** 批量取题目判分行（innerJoin modules 取 moduleCode），映射 id → 行；悬空 id 不入映射
- * （模块行随内容重删级联删题——判分与统计由调用方按映射缺失跳过） */
+ * （模块行随内容重删级联删题——判分与统计由调用方按映射缺失跳过）。
+ * 整卷 100+ 题 → inArray 分批（D1 100 绑定参数上限），多批结果合并 */
 async function fetchGradingQuestionRows(db: DbClient, questionIds: number[]): Promise<Map<number, GradingQuestionRow>> {
-  if (questionIds.length === 0) {
-    return new Map()
+  const map = new Map<number, GradingQuestionRow>()
+  for (const batch of chunked(questionIds, D1_PARAM_BATCH_SIZE)) {
+    const rows = await db
+      .select({ id: questions.id, moduleCode: modules.code, answer: questions.answer })
+      .from(questions)
+      .innerJoin(modules, eq(modules.id, questions.moduleId))
+      .where(inArray(questions.id, batch))
+    for (const row of rows) {
+      map.set(
+        row.id,
+        // modules.code 库层为无域类型的 TEXT，读取处按域值断言（与 fetchQuestionRows 同一约定）
+        { moduleCode: row.moduleCode as XingceModuleCode, answer: row.answer },
+      )
+    }
   }
-  const rows = await db
-    .select({ id: questions.id, moduleCode: modules.code, answer: questions.answer })
-    .from(questions)
-    .innerJoin(modules, eq(modules.id, questions.moduleId))
-    .where(inArray(questions.id, questionIds))
-  return new Map(
-    rows.map((row) => [
-      row.id,
-      // modules.code 库层为无域类型的 TEXT，读取处按域值断言（与 fetchQuestionRows 同一约定）
-      { moduleCode: row.moduleCode as XingceModuleCode, answer: row.answer },
-    ]),
-  )
+  return map
 }
 
 /** 蓝图模块明细的库侧读取结果（交卷判分超时推导与成绩单模块排序共用） */

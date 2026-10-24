@@ -13,13 +13,14 @@ import {
   registerForToken,
   requestJson,
 } from './api-helpers'
-import { db, fakeImageKey, insertWrongBookEntry, LEGACY_IMAGE_PATH, userIdOf, wrongBookRowOf } from './practice-fixtures'
+import { db, fakeImageKey, insertQuestion, insertWrongBookEntry, LEGACY_IMAGE_PATH, userIdOf, wrongBookRowOf } from './practice-fixtures'
 import {
   insertMockAnswerRow,
   insertMockFixture,
   insertMockSessionRow,
   insertPaperRow,
   linkBlueprintModules,
+  linkPaperQuestions,
   mockAnswerRowsOf,
   type BlueprintModulePlanInput,
   type MockFixture,
@@ -1101,5 +1102,65 @@ describe('交卷判分与成绩单（T2-01b）', () => {
     const report = await fetchReport(sessionId, token)
     expect(report.status).toBe(200)
     expect(report.body).toEqual(submitted.body)
+  })
+})
+
+describe('D1 绑定参数分批（T2-01b 热修）', () => {
+  /**
+   * Cloudflare D1 每查询最多 100 个绑定参数（线上实测 135 题整卷 inArray 触限；
+   * 本地 miniflare 无此限制，本用例锁定的是分批合并语义——120 题 > 批大小 90，
+   * 建会话/详情/判分三处跨批查询不得丢题、不得乱序）。
+   */
+  it('120 题整卷（跨 2 批）建会话/详情/逐题作答/交卷/成绩单全链路不丢题不乱序', async () => {
+    const politicalModuleId = fixture.content.moduleIds.get('political_theory')
+    if (politicalModuleId === undefined) throw new Error('模块 id 缺失')
+    const stem: RichContent = [{ type: 'text', text: '分批查询题干' }]
+    const questionIds: number[] = []
+    for (let i = 0; i < 120; i++) {
+      questionIds.push(await insertQuestion(politicalModuleId, `batch-d1-param-${i}`, stem, { answer: 'A' }))
+    }
+    const paperId = await insertPaperRow('分批查询测试卷（120 题）', { questionCount: 120 })
+    await linkPaperQuestions(paperId, questionIds)
+
+    const token = await registerForToken('alice')
+    const created = await requestJson('/api/mock/sessions', bearerPost(token, { paperId, totalMinutes: 120 }))
+    expect(created.status).toBe(201)
+    expect(numberField(created.body, 'total')).toBe(120)
+    const listedIds = questionList(created.body).map((question) => numberField(question, 'id'))
+    // 跨批合并后题集完整（120 题、无重复）且序 = 挂卷 sequence 序
+    expect(listedIds).toEqual(questionIds)
+    expect(new Set(listedIds).size).toBe(120)
+
+    // 详情端点同口径（fetchQuestionRows 与已答回显两处跨批）
+    const detail = await requestJson(
+      `/api/mock/sessions/${numberField(created.body, 'id')}`,
+      bearerGet(token),
+    )
+    expect(detail.status).toBe(200)
+    expect(questionList(detail.body).map((question) => numberField(question, 'id'))).toEqual(questionIds)
+
+    // 全卷作答（fetchAnsweredByQuestion 跨批）+ 交卷判分（fetchGradingQuestionRows 跨批）
+    const sessionId = numberField(created.body, 'id')
+    for (const questionId of questionIds) {
+      const answered = await requestJson(
+        `/api/mock/sessions/${sessionId}/answers`,
+        bearerPost(token, { questionId, answer: 'A', durationMs: 1_000 }),
+      )
+      expect(answered.status).toBe(200)
+    }
+    const submitted = await requestJson(`/api/mock/sessions/${sessionId}/submit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(submitted.status).toBe(200)
+    expect(submitted.body.summary).toEqual({
+      total: 120,
+      answered: 120,
+      correct: 120,
+      unanswered: 0,
+      timeoutCount: 0,
+      totalDurationMs: 120_000,
+    })
+    expect(questionList(submitted.body)).toHaveLength(120)
   })
 })
