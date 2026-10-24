@@ -6,14 +6,20 @@ import {
   classifyPaperCompleteness,
   DEFAULT_BLUEPRINT_CODE,
   deriveMockTotalMinutes,
+  deriveQuestionTimeLimits,
   MOCK_MAX_DURATION_MS,
   MOCK_TOTAL_MINUTES_MAX,
   MOCK_TOTAL_MINUTES_MIN,
 } from '@ncse/shared'
 import type {
+  BlueprintModulePlan,
+  ExamBlueprint,
   MockAnsweredInfo,
+  MockModuleReport,
   MockQuestionDto,
+  MockReportQuestionItem,
   MockSessionDetail,
+  MockSessionReport,
   MockSessionStatus,
   MockSessionSummary,
   PaperSummary,
@@ -26,6 +32,7 @@ import type {
 } from '@ncse/shared'
 import { createDb, type DbClient } from '../db'
 import {
+  blueprintModules,
   blueprints,
   mockAnswers,
   mockSessions,
@@ -37,6 +44,7 @@ import {
 } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import { projectRichContent } from './rich-content-project'
+import { applyWrongBookStateMachine } from './wrong-book-machine'
 import type { AppEnv } from '../types'
 
 /**
@@ -48,8 +56,14 @@ import type { AppEnv } from '../types'
  *   （D4：作答中不下发，交卷统一判分）、mock_answers 已答回显仅 answer+durationMs（判分字段不下发）；
  * - POST /sessions/:id/answers：逐题作答 upsert（每会话每题一行，交卷前可改答案——与练习
  *   append-only 不同；durationMs 取 max 防回退；已交卷会话拒绝，真实考试交卷即定卷）；
- * - POST /sessions/:id/timer：计时上报（D6 累计绝对值口径，服务端 max 防回退，不做墙钟推导）。
- * 交卷判分为后续片（本域只做作答期数据面）。
+ * - POST /sessions/:id/timer：计时上报（D6 累计绝对值口径，服务端 max 防回退，不做墙钟推导）；
+ * - POST /sessions/:id/submit：交卷统一判分（D4）——逐已作答行落 mock_answers.isCorrect 与
+ *   isTimeout（D5 超时按蓝图每题时限严格大于判，与练习判分同口径；蓝图行缺失/空明细防御性
+ *   全不判超时）、答错题联动错题本状态机（D8 复用共享 wrong-book-machine.ts；答对/未答不联动
+ *   ——模考答对非重做场景）、会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
+ *   practice_records（D9，mock_answers 独立承载）；无请求体入参，响应即成绩单（与 report 同形状）；
+ * - GET /sessions/:id/report：成绩单聚合（summary/modules/questions 全部从库重算，交卷后可随时
+ *   回看；逐题项不含正确答案与解析——展示解析走既有题目详情或后续需求）。
  * 全端点 requireAuth；业务错误一律抛 HTTPException（中文 message），
  * 由组合根 onError 统一收敛为 ApiErrorBody（沿用既有错误码，不新增）。
  */
@@ -68,6 +82,12 @@ const SESSION_CLOSED_ANSWER_MESSAGE = '会话已交卷，不可再作答'
 
 /** 已交卷会话的计时上报拒绝文案（同上拒绝语义，动作不同故分开文案求准确） */
 const SESSION_CLOSED_TIMER_MESSAGE = '会话已交卷，不可更新计时'
+
+/** 重复交卷拒绝文案（模考语义：交卷即定卷，submitted/abandoned 均拒——防判分与错题本重复副作用） */
+const SESSION_ALREADY_SUBMITTED_MESSAGE = '会话已交卷'
+
+/** 未交卷会话的成绩单拒绝文案（成绩单只对已定卷会话有意义——判分未落，聚合无依据） */
+const SESSION_NOT_SUBMITTED_MESSAGE = '会话未交卷'
 
 /** 解析 JSON 请求体；不可解析（非 JSON / 非法编码）抛 400（与 auth.ts 同构） */
 async function readJsonBody(c: Context<AppEnv>): Promise<unknown> {
@@ -159,20 +179,26 @@ async function fetchQuestionRows(db: DbClient, questionIds: number[]): Promise<M
   )
 }
 
-/** 作答/计时上报端点共用的会话头取行（status 与 questionIds 快照即校验所需的全部列） */
+/** 作答/计时/交卷/成绩单端点共用的会话头取行（status 与 questionIds/blueprintId 即校验与判分所需的全部列） */
 interface SessionWriteRow {
   id: number
+  blueprintId: number
   questionIds: number[]
   status: MockSessionStatus
 }
 
 /**
  * 归属条件并入查询取会话头（不存在与不属于当前用户同回 404，防存在性探测）；
- * 作答/计时上报两 POST 端点共用（与 GET /:id 的详情取行同构，但只取写路径所需列）。
+ * 作答/计时上报/交卷/成绩单四端点共用（与 GET /:id 的详情取行同构，但只取写路径所需列）。
  */
 async function fetchSessionForWrite(db: DbClient, sessionId: number, userId: number): Promise<SessionWriteRow | undefined> {
   const rows = await db
-    .select({ id: mockSessions.id, questionIds: mockSessions.questionIds, status: mockSessions.status })
+    .select({
+      id: mockSessions.id,
+      blueprintId: mockSessions.blueprintId,
+      questionIds: mockSessions.questionIds,
+      status: mockSessions.status,
+    })
     .from(mockSessions)
     .where(and(eq(mockSessions.id, sessionId), eq(mockSessions.userId, userId)))
   return rows[0]
@@ -241,6 +267,186 @@ function toQuestionDtos(
     })
   }
   return dtos
+}
+
+/** 交卷判分/成绩单共用的题目行投影（answer 判分比对，moduleCode 模块归属与超时推导；
+ * 成绩单只消费 moduleCode——answer 刻意不下发，见 MockReportQuestionItem 边界注释） */
+interface GradingQuestionRow {
+  moduleCode: XingceModuleCode
+  answer: string
+}
+
+/** 批量取题目判分行（innerJoin modules 取 moduleCode），映射 id → 行；悬空 id 不入映射
+ * （模块行随内容重删级联删题——判分与统计由调用方按映射缺失跳过） */
+async function fetchGradingQuestionRows(db: DbClient, questionIds: number[]): Promise<Map<number, GradingQuestionRow>> {
+  if (questionIds.length === 0) {
+    return new Map()
+  }
+  const rows = await db
+    .select({ id: questions.id, moduleCode: modules.code, answer: questions.answer })
+    .from(questions)
+    .innerJoin(modules, eq(modules.id, questions.moduleId))
+    .where(inArray(questions.id, questionIds))
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      // modules.code 库层为无域类型的 TEXT，读取处按域值断言（与 fetchQuestionRows 同一约定）
+      { moduleCode: row.moduleCode as XingceModuleCode, answer: row.answer },
+    ]),
+  )
+}
+
+/** 蓝图模块明细的库侧读取结果（交卷判分超时推导与成绩单模块排序共用） */
+interface BlueprintPlanInfo {
+  /** 每模块每题时限映射（秒；蓝图行缺失/空明细 → 空映射，全部不判超时） */
+  questionTimeLimits: Partial<Record<XingceModuleCode, number>>
+  /** 蓝图模块序（成绩单模块分组排序锚；蓝图行缺失/空明细 → 空序） */
+  moduleOrder: XingceModuleCode[]
+}
+
+/**
+ * 从库读蓝图模块明细并经 shared deriveQuestionTimeLimits 推导每题时限映射——推导口径以
+ * shared 为唯一权威（库只供数据，勿在此另写 floor 公式）：blueprints join blueprint_modules
+ * join modules，序 = blueprint_modules.id（自增即插入序；种子按 ExamBlueprint.modules 序写入）。
+ * 蓝图行缺失/空明细（理论不可达——建会话 restrict 保证蓝图行存在、明细由种子保证）：
+ * 防御性按空映射处理（全部不判超时、成绩单模块序退化为全字典序）并 console.error，不炸交卷主流程。
+ */
+async function fetchBlueprintPlanInfo(db: DbClient, blueprintId: number): Promise<BlueprintPlanInfo> {
+  const rows = await db
+    .select({
+      code: blueprints.code,
+      name: blueprints.name,
+      moduleCode: modules.code,
+      questionCount: blueprintModules.questionCount,
+      timeLimitMinutes: blueprintModules.timeLimitMinutes,
+    })
+    .from(blueprints)
+    .innerJoin(blueprintModules, eq(blueprintModules.blueprintId, blueprints.id))
+    .innerJoin(modules, eq(modules.id, blueprintModules.moduleId))
+    .where(eq(blueprints.id, blueprintId))
+    .orderBy(asc(blueprintModules.id))
+  if (rows.length === 0) {
+    console.error(`模考蓝图 id=${blueprintId} 行缺失或无模块明细，判分不标记超时（防御分支，理论不可达）`)
+    return { questionTimeLimits: {}, moduleOrder: [] }
+  }
+  const plans: BlueprintModulePlan[] = rows.map((row) => ({
+    module: row.moduleCode as XingceModuleCode,
+    questionCount: row.questionCount,
+    timeLimitMinutes: row.timeLimitMinutes,
+  }))
+  // 构造 ExamBlueprint 形状喂 shared 推导（totalMinutes 汇总自洽——推导函数不读该值，但类型要求）
+  const blueprint: ExamBlueprint = {
+    code: rows[0].code,
+    name: rows[0].name,
+    totalMinutes: plans.reduce((sum, plan) => sum + plan.timeLimitMinutes, 0),
+    modules: plans,
+  }
+  return { questionTimeLimits: deriveQuestionTimeLimits(blueprint), moduleOrder: plans.map((plan) => plan.module) }
+}
+
+/** 成绩单聚合读出的作答行投影（answer 可空——库缺省可空，作答端点只写有答案的行） */
+interface ReportAnswerRow {
+  questionId: number
+  answer: string | null
+  isCorrect: boolean | null
+  isTimeout: boolean
+  durationMs: number
+}
+
+/**
+ * 成绩单聚合（交卷响应与 GET report 共用；全部从 mock_answers + questions join modules 现读，
+ * 不依赖判分时内存态——交卷后可随时重算回看）：
+ * - 已答口径 = isCorrect 非空行（交卷后已答行恒已判分；abandoned 未判分行不计入 answered，
+ *   但其作答内容仍在 questions 逐题项回显）；
+ * - 悬空题目 id 跳过（不计 total，与交卷判分口径一致）；
+ * - 模块序 = 蓝图 modules 序，蓝图未含的模块按 code 字典序殿后；
+ * - 逐题项不含正确答案与解析（正确答案交卷后回发虽合法，本端点保持克制——展示解析走既有
+ *   题目详情或后续需求，见 shared MockReportQuestionItem 注释）。
+ */
+async function buildSessionReport(
+  db: DbClient,
+  session: { id: number; questionIds: number[]; blueprintId: number },
+): Promise<MockSessionReport> {
+  const questionRows = await fetchGradingQuestionRows(db, session.questionIds)
+  const answerRows: ReportAnswerRow[] = await db
+    .select({
+      questionId: mockAnswers.questionId,
+      answer: mockAnswers.answer,
+      isCorrect: mockAnswers.isCorrect,
+      isTimeout: mockAnswers.isTimeout,
+      durationMs: mockAnswers.durationMs,
+    })
+    .from(mockAnswers)
+    .where(eq(mockAnswers.sessionId, session.id))
+  const answerByQuestion = new Map(answerRows.map((row) => [row.questionId, row]))
+  const planInfo = await fetchBlueprintPlanInfo(db, session.blueprintId)
+
+  // 逐题项（序 = questionIds 快照序，悬空跳过）与 summary/分模块聚合一次遍历完成
+  const questions: MockReportQuestionItem[] = []
+  const moduleAgg = new Map<XingceModuleCode, MockModuleReport>()
+  const summary = { total: 0, answered: 0, correct: 0, unanswered: 0, timeoutCount: 0, totalDurationMs: 0 }
+  for (const id of session.questionIds) {
+    const questionRow = questionRows.get(id)
+    if (questionRow === undefined) {
+      continue
+    }
+    const answerRow = answerByQuestion.get(id)
+    questions.push({
+      questionId: id,
+      moduleCode: questionRow.moduleCode,
+      answer: answerRow?.answer ?? null,
+      isCorrect: answerRow?.isCorrect ?? null,
+      isTimeout: answerRow?.isTimeout ?? false,
+      durationMs: answerRow?.durationMs ?? 0,
+    })
+
+    summary.total += 1
+    let moduleReport = moduleAgg.get(questionRow.moduleCode)
+    if (moduleReport === undefined) {
+      moduleReport = {
+        moduleCode: questionRow.moduleCode,
+        total: 0,
+        answered: 0,
+        correct: 0,
+        timeoutCount: 0,
+        totalDurationMs: 0,
+      }
+      moduleAgg.set(questionRow.moduleCode, moduleReport)
+    }
+    moduleReport.total += 1
+    // 已答口径 = 已判分行（isCorrect 非空）；聚合四项（answered/correct/timeout/用时）同基
+    if (answerRow !== undefined && answerRow.isCorrect !== null) {
+      summary.answered += 1
+      moduleReport.answered += 1
+      if (answerRow.isCorrect) {
+        summary.correct += 1
+        moduleReport.correct += 1
+      }
+      if (answerRow.isTimeout) {
+        summary.timeoutCount += 1
+        moduleReport.timeoutCount += 1
+      }
+      summary.totalDurationMs += answerRow.durationMs
+      moduleReport.totalDurationMs += answerRow.durationMs
+    }
+  }
+  summary.unanswered = summary.total - summary.answered
+
+  // 模块排序：蓝图 modules 序在前，蓝图未含（或蓝图防御性缺失）的模块按 code 字典序殿后
+  const moduleOrder = planInfo.moduleOrder
+  const orderedModuleCodes = [
+    ...moduleOrder.filter((code) => moduleAgg.has(code)),
+    ...[...moduleAgg.keys()].filter((code) => !moduleOrder.includes(code)).sort(),
+  ]
+  const modules: MockModuleReport[] = []
+  for (const code of orderedModuleCodes) {
+    const moduleReport = moduleAgg.get(code)
+    if (moduleReport !== undefined) {
+      modules.push(moduleReport)
+    }
+  }
+
+  return { summary, modules, questions }
 }
 
 export const mockRoute = new Hono<AppEnv>()
@@ -572,4 +778,103 @@ mockRoute.post('/sessions/:id/timer', async (c) => {
 
   const responseBody: UpdateMockTimerResponse = { elapsedMs: row.elapsedMs }
   return c.json(responseBody, 200)
+})
+
+mockRoute.post('/sessions/:id/submit', async (c) => {
+  // 非数字 id 一律 404（同作答端点，不区分原因，防存在性探测）
+  const idParam = c.req.param('id')
+  if (!/^\d+$/.test(idParam)) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  const authUser = c.get('authUser')
+  const db = createDb(c.env)
+
+  // 归属条件并入查询（同作答端点防探测口径）；交卷无请求体入参（不需要客户端提交任何数据）
+  const session = await fetchSessionForWrite(db, Number(idParam), authUser.id)
+  if (session === undefined) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  // 模考语义：交卷即定卷——submitted/abandoned 均拒（重复交卷拒绝，防判分与错题本重复副作用）
+  if (session.status !== 'in_progress') {
+    throw new HTTPException(400, { message: SESSION_ALREADY_SUBMITTED_MESSAGE })
+  }
+
+  // 判分材料：题目行（答案比对 + 模块归属）与蓝图每题时限映射（D5 超时推导）
+  const questionRows = await fetchGradingQuestionRows(db, session.questionIds)
+  const planInfo = await fetchBlueprintPlanInfo(db, session.blueprintId)
+
+  // 逐已作答行统一判分（D4）：取会话全部作答行，answer 为空的行（作答端点只写有答案的行，
+  // 库缺省可空——防御脏数据）与悬空题目 id（mock_answers 挂题目外键级联删，理论不可达）跳过：
+  // - isCorrect = 作答选项键 === 题目答案（单选比对口径，与练习判分一致）；
+  // - isTimeout = durationMs 严格大于蓝图该模块每题秒数 × 1000（等于不超——与练习判分同口径），
+  //   模块不在蓝图映射 → false；
+  // - 逐题 update 落 mock_answers（行数 ≤135 自用可接受；updatedAt 显式给值——同 upsert 惯例）。
+  const answerRows = await db
+    .select({ questionId: mockAnswers.questionId, answer: mockAnswers.answer, durationMs: mockAnswers.durationMs })
+    .from(mockAnswers)
+    .where(eq(mockAnswers.sessionId, session.id))
+  const gradedAt = new Date().toISOString()
+  for (const row of answerRows) {
+    if (row.answer === null) {
+      continue
+    }
+    const questionRow = questionRows.get(row.questionId)
+    if (questionRow === undefined) {
+      continue
+    }
+    const isCorrect = row.answer === questionRow.answer
+    const timeLimitSeconds = planInfo.questionTimeLimits[questionRow.moduleCode]
+    const isTimeout = timeLimitSeconds !== undefined && row.durationMs > timeLimitSeconds * 1000
+    await db
+      .update(mockAnswers)
+      .set({ isCorrect, isTimeout, updatedAt: gradedAt })
+      .where(and(eq(mockAnswers.sessionId, session.id), eq(mockAnswers.questionId, row.questionId)))
+
+    // 错题本联动（D8）：仅答错题进状态机（复用共享 wrong-book-machine.ts——答错复活在册/
+    // 新错入册，与专项刷题同一函数同一行为）。判分 true 的题不动错题本：D8「与专项刷题同状态机」
+    // 取保守解释——同指同一个状态机函数与答错行为；练习「答对在册累加 redoCount」是复习闭环语义，
+    // 模考是考试场景、答对不是「重做」，故不联动（未答题同样不动）。
+    if (!isCorrect) {
+      await applyWrongBookStateMachine(db, authUser.id, row.questionId, false)
+    }
+  }
+
+  // 会话翻 submitted（交卷即定卷；submittedAt 落值；updatedAt 显式给值——不依赖 $onUpdate）
+  const submittedAt = new Date().toISOString()
+  await db
+    .update(mockSessions)
+    .set({ status: 'submitted', submittedAt, updatedAt: submittedAt })
+    .where(eq(mockSessions.id, session.id))
+
+  // 交卷即回成绩单（与 GET report 同形状、逐字段一致——聚合从库现读已落值的判分结果）
+  const body = await buildSessionReport(db, session)
+  return c.json(body, 200)
+})
+
+mockRoute.get('/sessions/:id/report', async (c) => {
+  // 非数字 id 一律 404（同详情端点，不区分原因，防存在性探测）
+  const idParam = c.req.param('id')
+  if (!/^\d+$/.test(idParam)) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  const authUser = c.get('authUser')
+  const db = createDb(c.env)
+
+  // 归属条件并入查询（同详情端点防探测口径）
+  const session = await fetchSessionForWrite(db, Number(idParam), authUser.id)
+  if (session === undefined) {
+    throw new HTTPException(404, { message: SESSION_NOT_FOUND_MESSAGE })
+  }
+
+  // 成绩单只对已定卷会话有意义（in_progress 判分未落、聚合无依据）；
+  // submitted/abandoned 均可取（abandoned 未判分 → answered 恒 0，作答内容仍在逐题项回显）
+  if (session.status === 'in_progress') {
+    throw new HTTPException(400, { message: SESSION_NOT_SUBMITTED_MESSAGE })
+  }
+
+  const body = await buildSessionReport(db, session)
+  return c.json(body, 200)
 })

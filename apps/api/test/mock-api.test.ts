@@ -13,13 +13,15 @@ import {
   registerForToken,
   requestJson,
 } from './api-helpers'
-import { db, fakeImageKey, LEGACY_IMAGE_PATH, userIdOf } from './practice-fixtures'
+import { db, fakeImageKey, insertWrongBookEntry, LEGACY_IMAGE_PATH, userIdOf, wrongBookRowOf } from './practice-fixtures'
 import {
   insertMockAnswerRow,
   insertMockFixture,
   insertMockSessionRow,
   insertPaperRow,
+  linkBlueprintModules,
   mockAnswerRowsOf,
+  type BlueprintModulePlanInput,
   type MockFixture,
 } from './mock-fixtures'
 
@@ -28,8 +30,9 @@ import {
  * onError 错误信封），D1 为 workerd 内本地实例。夹具链复用 practice-fixtures 内容题库 +
  * mock-fixtures 蓝图/试卷/归属/会话/作答直插（卷题集序刻意与题目 id 大小序不同，
  * 验证快照按 question_papers.sequence 取序）。
- * 覆盖生命周期三端点与作答/计时上报两端点（upsert/防回退/已交卷拒绝——交卷即定卷）；
- * 交卷判分端点为后续片。
+ * 覆盖生命周期三端点、作答/计时上报两端点（upsert/防回退/已交卷拒绝——交卷即定卷）
+ * 与交卷判分/成绩单两端点（统一判分落 isCorrect/isTimeout、错题本联动 D8、
+ * summary/modules/questions 聚合口径；判分测试蓝图挂自造小值明细，边界断言清晰）。
  */
 
 /** 测试卷名（mock-fixtures 的 insertMockFixture 固定值，列表/详情字段精确断言共用） */
@@ -675,5 +678,428 @@ describe('作答与计时（T2-01b）', () => {
     const nonNumeric = await requestJson('/api/mock/sessions/abc/timer', bearerPost(alice.token, { elapsedMs: 60_000 }))
     expect(nonNumeric.status).toBe(404)
     expect(errorField(nonNumeric.body).message).toBe('会话不存在')
+  })
+})
+
+describe('交卷判分与成绩单（T2-01b）', () => {
+  /**
+   * 判分测试蓝图明细（自造小值断言更清晰；每题秒数由被测端点经 shared 推导）：
+   * political_theory 2 题 1 分钟 → 每题 30s、common_sense 3 题 1 分钟 → 每题 20s（floor(60/3)）；
+   * 序刻意与字典序相反（political_theory 先于 common_sense——验证成绩单模块序取蓝图序）；
+   * judgement 刻意不入蓝图（蓝图外模块不判超时 + 成绩单模块殿后组用例）。
+   */
+  const GRADING_PLANS: BlueprintModulePlanInput[] = [
+    { module: 'political_theory', questionCount: 2, timeLimitMinutes: 1 },
+    { module: 'common_sense', questionCount: 3, timeLimitMinutes: 1 },
+  ]
+
+  /** 直插进行中会话（缺省 status in_progress、totalMinutes 10），返回 token 与 sessionId */
+  async function createGradingSession(
+    username: string,
+    questionIds: number[],
+  ): Promise<{ token: string; sessionId: number }> {
+    const token = await registerForToken(username)
+    const sessionId = await insertMockSessionRow({
+      userId: await userIdOf(username),
+      blueprintId: fixture.blueprintId,
+      paperId: fixture.paperId,
+      questionIds,
+      totalMinutes: 10,
+    })
+    return { token, sessionId }
+  }
+
+  /** 交卷（无请求体——端点无入参，不发 Content-Type/体） */
+  function submitSession(sessionId: number, token: string) {
+    return requestJson(`/api/mock/sessions/${sessionId}/submit`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  }
+
+  /** 取成绩单 */
+  function fetchReport(sessionId: number, token: string) {
+    return requestJson(`/api/mock/sessions/${sessionId}/report`, bearerGet(token))
+  }
+
+  /* ---------- POST /sessions/:id/submit（交卷统一判分） ---------- */
+
+  it('交卷主流程：3 题卷（答对/答错/未答）无请求体 200 回成绩单；isCorrect 库内落值 1/0/null、isTimeout 落 false；summary 计数精确；status 翻 submitted、submittedAt 落值；重复交卷（空对象体）400「会话已交卷」', async () => {
+    const [judgementId, politicalId, commonId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [politicalId, commonId, judgementId])
+    // 题库答案缺省 'B'：B 答对、A 答错、判断题未答；蓝图缺省无明细（防御分支：全部不判超时）
+    await insertMockAnswerRow(sessionId, politicalId, { answer: 'B', durationMs: 5_000 })
+    await insertMockAnswerRow(sessionId, commonId, { answer: 'A', durationMs: 6_000 })
+
+    const { status, body } = await submitSession(sessionId, token)
+
+    expect(status).toBe(200)
+    expect(body.summary).toEqual({
+      total: 3,
+      answered: 2,
+      correct: 1,
+      unanswered: 1,
+      timeoutCount: 0,
+      totalDurationMs: 11_000,
+    })
+    // 逐题项 = 快照序，未答题 answer/isCorrect null、用时 0
+    expect(questionList(body)).toEqual([
+      { questionId: politicalId, moduleCode: 'political_theory', answer: 'B', isCorrect: true, isTimeout: false, durationMs: 5_000 },
+      { questionId: commonId, moduleCode: 'common_sense', answer: 'A', isCorrect: false, isTimeout: false, durationMs: 6_000 },
+      { questionId: judgementId, moduleCode: 'judgement', answer: null, isCorrect: null, isTimeout: false, durationMs: 0 },
+    ])
+
+    // 判分落库（库内断言）：isCorrect 落值、isTimeout notNull 落 false
+    const rows = await mockAnswerRowsOf(sessionId)
+    expect(rows).toHaveLength(2)
+    expect(rows.find((row) => row.questionId === politicalId)).toMatchObject({ isCorrect: true, isTimeout: false })
+    expect(rows.find((row) => row.questionId === commonId)).toMatchObject({ isCorrect: false, isTimeout: false })
+
+    // 会话翻 submitted、submittedAt 落值（ISO 文本）
+    const sessionRow = (
+      await db
+        .select({ status: mockSessions.status, submittedAt: mockSessions.submittedAt })
+        .from(mockSessions)
+        .where(eq(mockSessions.id, sessionId))
+    ).at(0)
+    expect(sessionRow?.status).toBe('submitted')
+    expect(sessionRow?.submittedAt).not.toBeNull()
+
+    // 重复交卷拒绝（空对象请求体亦可——端点本就无入参）；文案「会话已交卷」
+    const repeat = await requestJson(`/api/mock/sessions/${sessionId}/submit`, bearerPost(token, {}))
+    expect(repeat.status).toBe(400)
+    const error = errorField(repeat.body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toBe('会话已交卷')
+  })
+
+  it('isTimeout 边界（蓝图小值：common_sense 每题 20s）：恰等于时限不超、严格大于判超；蓝图未含模块（judgement）不判超时', async () => {
+    await linkBlueprintModules(fixture.blueprintId, fixture.content.moduleIds, GRADING_PLANS)
+    const [judgementId, , commonExactId, , commonOverId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [commonExactId, commonOverId, judgementId])
+    await insertMockAnswerRow(sessionId, commonExactId, { answer: 'B', durationMs: 20_000 })
+    await insertMockAnswerRow(sessionId, commonOverId, { answer: 'B', durationMs: 20_001 })
+    await insertMockAnswerRow(sessionId, judgementId, { answer: 'B', durationMs: 600_000 })
+
+    const { status, body } = await submitSession(sessionId, token)
+
+    expect(status).toBe(200)
+    const rows = await mockAnswerRowsOf(sessionId)
+    expect(rows.find((row) => row.questionId === commonExactId)?.isTimeout).toBe(false)
+    expect(rows.find((row) => row.questionId === commonOverId)?.isTimeout).toBe(true)
+    expect(rows.find((row) => row.questionId === judgementId)?.isTimeout).toBe(false)
+    expect(body.summary).toMatchObject({ timeoutCount: 1 })
+  })
+
+  it('改答案后交卷判最新值（走真实作答端点）：先答 A 再改 B → answer=B 判对', async () => {
+    const token = await registerForToken('alice')
+    const created = await requestJson('/api/mock/sessions', bearerPost(token, { paperId: fixture.paperId }))
+    expect(created.status).toBe(201)
+    const sessionId = numberField(created.body, 'id')
+    const questionId = fixture.paperQuestionIds[0]
+
+    const first = await requestJson(
+      `/api/mock/sessions/${sessionId}/answers`,
+      bearerPost(token, { questionId, answer: 'A', durationMs: 1_000 }),
+    )
+    expect(first.status).toBe(200)
+    const second = await requestJson(
+      `/api/mock/sessions/${sessionId}/answers`,
+      bearerPost(token, { questionId, answer: 'B', durationMs: 1_500 }),
+    )
+    expect(second.status).toBe(200)
+
+    const { status, body } = await submitSession(sessionId, token)
+    expect(status).toBe(200)
+    // 库内与成绩单均按最新 answer 判分
+    expect(await mockAnswerRowsOf(sessionId)).toHaveLength(1)
+    expect((await mockAnswerRowsOf(sessionId))[0]).toMatchObject({ answer: 'B', isCorrect: true })
+    expect(questionList(body)[0]).toMatchObject({ questionId, answer: 'B', isCorrect: true })
+  })
+
+  it('错题本联动（D8）：答错新题入册 active/wrongCount 1；既有 eliminated 条目复活 active 且计数累加；答对题与未答题不动在册条目（模考答对非重做）', async () => {
+    const [judgementId, newWrongId, correctId, reviveId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [newWrongId, reviveId, correctId, judgementId])
+    const userId = await userIdOf('alice')
+    // 前置在册：reviveId eliminated（答错复活）、correctId active（答对不动）、judgementId hard（未答不动）
+    await insertWrongBookEntry(userId, reviveId, { status: 'eliminated', wrongCount: 2, redoCount: 1, consecutiveCorrect: 3 })
+    await insertWrongBookEntry(userId, correctId, { status: 'active', wrongCount: 1, redoCount: 5, consecutiveCorrect: 2 })
+    await insertWrongBookEntry(userId, judgementId, { status: 'hard', wrongCount: 1, redoCount: 0, consecutiveCorrect: 0 })
+    await insertMockAnswerRow(sessionId, newWrongId, { answer: 'A' })
+    await insertMockAnswerRow(sessionId, reviveId, { answer: 'A' })
+    await insertMockAnswerRow(sessionId, correctId, { answer: 'B' })
+
+    const { status } = await submitSession(sessionId, token)
+    expect(status).toBe(200)
+
+    // 答错新题：插入分支 active/wrongCount 1/redoCount 0/连对 0
+    expect(await wrongBookRowOf(userId, newWrongId)).toMatchObject({
+      status: 'active',
+      wrongCount: 1,
+      redoCount: 0,
+      consecutiveCorrect: 0,
+    })
+    // 答错在册（eliminated）：复活 active、wrongCount/redoCount 累加、连对清零
+    expect(await wrongBookRowOf(userId, reviveId)).toMatchObject({
+      status: 'active',
+      wrongCount: 3,
+      redoCount: 2,
+      consecutiveCorrect: 0,
+    })
+    // 答对在册：不动（本片解释——练习复习闭环才累加 redoCount，模考答对非重做）
+    expect(await wrongBookRowOf(userId, correctId)).toMatchObject({
+      status: 'active',
+      wrongCount: 1,
+      redoCount: 5,
+      consecutiveCorrect: 2,
+    })
+    // 未答在册：不动
+    expect(await wrongBookRowOf(userId, judgementId)).toMatchObject({
+      status: 'hard',
+      wrongCount: 1,
+      redoCount: 0,
+      consecutiveCorrect: 0,
+    })
+  })
+
+  it('悬空题目 id（快照内但题目行已删）：交卷不炸，成绩单 total 不计悬空、其模块组不出现（无蓝图明细 → 模块序退化为字典序）；悬空题作答行随题级联删', async () => {
+    const [judgementId, politicalId, commonId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [judgementId, politicalId, commonId])
+    await insertMockAnswerRow(sessionId, judgementId, { answer: 'A' })
+    await insertMockAnswerRow(sessionId, politicalId, { answer: 'B' })
+    await insertMockAnswerRow(sessionId, commonId, { answer: 'B' })
+    // 删判断题行（question_papers 与 mock_answers 该题行级联删，会话 JSON 快照保留 id → 悬空）
+    await db.delete(questions).where(eq(questions.id, judgementId))
+
+    const { status, body } = await submitSession(sessionId, token)
+
+    expect(status).toBe(200)
+    expect(body.summary).toEqual({
+      total: 2,
+      answered: 2,
+      correct: 2,
+      unanswered: 0,
+      timeoutCount: 0,
+      totalDurationMs: 6_000,
+    })
+    // judgement 组不出现；蓝图无明细 → 模块序全字典序（common_sense 先于 political_theory）
+    const moduleCodes = (body.modules as unknown as { moduleCode: string }[]).map((row) => row.moduleCode)
+    expect(moduleCodes).toEqual(['common_sense', 'political_theory'])
+    expect(questionList(body).map((question) => numberField(question, 'questionId'))).toEqual([politicalId, commonId])
+  })
+
+  it.each(['submitted', 'abandoned'] as const)(
+    '已定卷会话（%s）交卷：400 bad_request「会话已交卷」（重复交卷拒绝；判分与错题本不重复副作用）',
+    async (sessionStatus) => {
+      const token = await registerForToken('alice')
+      const userId = await userIdOf('alice')
+      const politicalId = fixture.paperQuestionIds[1]
+      const sessionId = await insertMockSessionRow({
+        userId,
+        blueprintId: fixture.blueprintId,
+        paperId: fixture.paperId,
+        questionIds: [politicalId],
+        totalMinutes: 10,
+        overrides: { status: sessionStatus },
+      })
+      await insertMockAnswerRow(sessionId, politicalId, { answer: 'A' })
+
+      const { status, body } = await submitSession(sessionId, token)
+      expect(status).toBe(400)
+      const error = errorField(body)
+      expect(error.code).toBe('bad_request')
+      expect(error.message).toBe('会话已交卷')
+      // 拒绝后不判分（isCorrect 保持 null）、不动错题本
+      expect((await mockAnswerRowsOf(sessionId))[0].isCorrect).toBeNull()
+      expect(await wrongBookRowOf(userId, politicalId)).toBeUndefined()
+    },
+  )
+
+  it('交卷与成绩单：他人会话/不存在 id/非数字 id 一律 404 同文案「会话不存在」（防存在性探测）', async () => {
+    const { token: tokenAlice, sessionId } = await createGradingSession('alice', fixture.paperQuestionIds.slice(0, 2))
+    const tokenBob = await registerForToken('bob')
+
+    const foreignSubmit = await submitSession(sessionId, tokenBob)
+    expect(foreignSubmit.status).toBe(404)
+    expect(errorField(foreignSubmit.body).message).toBe('会话不存在')
+    const foreignReport = await fetchReport(sessionId, tokenBob)
+    expect(foreignReport.status).toBe(404)
+    expect(errorField(foreignReport.body).message).toBe('会话不存在')
+
+    const missingSubmit = await submitSession(999_999, tokenAlice)
+    expect(missingSubmit.status).toBe(404)
+    expect(errorField(missingSubmit.body).message).toBe('会话不存在')
+    const missingReport = await fetchReport(999_999, tokenAlice)
+    expect(missingReport.status).toBe(404)
+    expect(errorField(missingReport.body).message).toBe('会话不存在')
+
+    const nonNumericSubmit = await requestJson('/api/mock/sessions/abc/submit', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenAlice}` },
+    })
+    expect(nonNumericSubmit.status).toBe(404)
+    expect(errorField(nonNumericSubmit.body).message).toBe('会话不存在')
+    const nonNumericReport = await requestJson('/api/mock/sessions/abc/report', bearerGet(tokenAlice))
+    expect(nonNumericReport.status).toBe(404)
+    expect(errorField(nonNumericReport.body).message).toBe('会话不存在')
+  })
+
+  it('缺 token：交卷与成绩单均 401 + unauthorized 信封', async () => {
+    const outcomes = [
+      await requestJson('/api/mock/sessions/1/submit', { method: 'POST' }),
+      await requestJson('/api/mock/sessions/1/report', { method: 'GET' }),
+    ]
+    for (const { status, body } of outcomes) {
+      expect(status).toBe(401)
+      expect(errorField(body).code).toBe('unauthorized')
+    }
+  })
+
+  it('交卷后作答被拒（回归既有作答端点）：400「会话已交卷，不可再作答」，不落新作答行', async () => {
+    const token = await registerForToken('alice')
+    const created = await requestJson('/api/mock/sessions', bearerPost(token, { paperId: fixture.paperId }))
+    expect(created.status).toBe(201)
+    const sessionId = numberField(created.body, 'id')
+    const questionId = fixture.paperQuestionIds[0]
+    const answered = await requestJson(
+      `/api/mock/sessions/${sessionId}/answers`,
+      bearerPost(token, { questionId, answer: 'B', durationMs: 1_000 }),
+    )
+    expect(answered.status).toBe(200)
+    const submitted = await submitSession(sessionId, token)
+    expect(submitted.status).toBe(200)
+
+    const rejected = await requestJson(
+      `/api/mock/sessions/${sessionId}/answers`,
+      bearerPost(token, { questionId: fixture.paperQuestionIds[1], answer: 'A', durationMs: 1_000 }),
+    )
+    expect(rejected.status).toBe(400)
+    expect(errorField(rejected.body).message).toBe('会话已交卷，不可再作答')
+    expect(await mockAnswerRowsOf(sessionId)).toHaveLength(1)
+  })
+
+  it('交卷后 GET /:id 详情仍可取（回归）：status submitted、answeredCount 正常、已答回显仅 answer+durationMs（判分字段不下发，D4）', async () => {
+    const [judgementId, politicalId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [politicalId, judgementId])
+    await insertMockAnswerRow(sessionId, politicalId, { answer: 'B', durationMs: 5_000 })
+    const submitted = await submitSession(sessionId, token)
+    expect(submitted.status).toBe(200)
+
+    const detail = await requestJson(`/api/mock/sessions/${sessionId}`, bearerGet(token))
+    expect(detail.status).toBe(200)
+    expect(detail.body.status).toBe('submitted')
+    expect(numberField(detail.body, 'answeredCount')).toBe(1)
+    const list = questionList(detail.body)
+    expect(list).toHaveLength(2)
+    expect(list[0].answered).toStrictEqual({ answer: 'B', durationMs: 5_000 })
+    expect(list[0].answered).not.toHaveProperty('isCorrect')
+    expect(list[1].answered).toBeNull()
+  })
+
+  /* ---------- GET /sessions/:id/report（成绩单聚合） ---------- */
+
+  it('成绩单模块分组：序 = 蓝图模块序（political_theory 先于 common_sense，非字典序）、蓝图外模块（judgement）字典序殿后；各组计数/用时求和精确、逐题项快照序与键集精确', async () => {
+    await linkBlueprintModules(fixture.blueprintId, fixture.content.moduleIds, GRADING_PLANS)
+    const [judgementId, politicalFirstId, commonFirstId, politicalSecondId, commonSecondId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [
+      politicalFirstId,
+      commonFirstId,
+      politicalSecondId,
+      commonSecondId,
+      judgementId,
+    ])
+    await insertMockAnswerRow(sessionId, politicalFirstId, { answer: 'B', durationMs: 4_000 })
+    await insertMockAnswerRow(sessionId, politicalSecondId, { answer: 'A', durationMs: 5_000 })
+    await insertMockAnswerRow(sessionId, commonFirstId, { answer: 'B', durationMs: 3_000 })
+    // 常识题每题 20s：25_000 严格大于 → 答错且超时
+    await insertMockAnswerRow(sessionId, commonSecondId, { answer: 'A', durationMs: 25_000 })
+
+    const { status, body } = await submitSession(sessionId, token)
+
+    expect(status).toBe(200)
+    expect(body.summary).toEqual({
+      total: 5,
+      answered: 4,
+      correct: 2,
+      unanswered: 1,
+      timeoutCount: 1,
+      totalDurationMs: 37_000,
+    })
+    // 模块序 = 蓝图序（political_theory → common_sense），judgement（蓝图外）殿后
+    expect(body.modules).toEqual([
+      { moduleCode: 'political_theory', total: 2, answered: 2, correct: 1, timeoutCount: 0, totalDurationMs: 9_000 },
+      { moduleCode: 'common_sense', total: 2, answered: 2, correct: 1, timeoutCount: 1, totalDurationMs: 28_000 },
+      { moduleCode: 'judgement', total: 1, answered: 0, correct: 0, timeoutCount: 0, totalDurationMs: 0 },
+    ])
+    // 计数给、率不给（无正确率等派生字段）
+    for (const moduleReport of body.modules as unknown as Record<string, unknown>[]) {
+      expect(Object.keys(moduleReport).sort()).toEqual([
+        'answered',
+        'correct',
+        'moduleCode',
+        'timeoutCount',
+        'total',
+        'totalDurationMs',
+      ])
+    }
+    expect(questionList(body)).toEqual([
+      { questionId: politicalFirstId, moduleCode: 'political_theory', answer: 'B', isCorrect: true, isTimeout: false, durationMs: 4_000 },
+      { questionId: commonFirstId, moduleCode: 'common_sense', answer: 'B', isCorrect: true, isTimeout: false, durationMs: 3_000 },
+      { questionId: politicalSecondId, moduleCode: 'political_theory', answer: 'A', isCorrect: false, isTimeout: false, durationMs: 5_000 },
+      { questionId: commonSecondId, moduleCode: 'common_sense', answer: 'A', isCorrect: false, isTimeout: true, durationMs: 25_000 },
+      { questionId: judgementId, moduleCode: 'judgement', answer: null, isCorrect: null, isTimeout: false, durationMs: 0 },
+    ])
+  })
+
+  it('成绩单：in_progress 会话 400 bad_request「会话未交卷」（判分未落，聚合无依据）', async () => {
+    const { token, sessionId } = await createGradingSession('alice', fixture.paperQuestionIds.slice(0, 2))
+    const { status, body } = await fetchReport(sessionId, token)
+    expect(status).toBe(400)
+    const error = errorField(body)
+    expect(error.code).toBe('bad_request')
+    expect(error.message).toBe('会话未交卷')
+  })
+
+  it('abandoned 会话成绩单可取：200，未判分行不计 answered（作答内容仍在逐题项回显）', async () => {
+    const [, politicalId, commonId] = fixture.paperQuestionIds
+    const token = await registerForToken('alice')
+    const userId = await userIdOf('alice')
+    const sessionId = await insertMockSessionRow({
+      userId,
+      blueprintId: fixture.blueprintId,
+      paperId: fixture.paperId,
+      questionIds: [politicalId, commonId],
+      totalMinutes: 10,
+      overrides: { status: 'abandoned' },
+    })
+    await insertMockAnswerRow(sessionId, politicalId, { answer: 'A', durationMs: 4_000 })
+
+    const { status, body } = await fetchReport(sessionId, token)
+    expect(status).toBe(200)
+    expect(body.summary).toEqual({
+      total: 2,
+      answered: 0,
+      correct: 0,
+      unanswered: 2,
+      timeoutCount: 0,
+      totalDurationMs: 0,
+    })
+    expect(questionList(body)).toEqual([
+      { questionId: politicalId, moduleCode: 'political_theory', answer: 'A', isCorrect: null, isTimeout: false, durationMs: 4_000 },
+      { questionId: commonId, moduleCode: 'common_sense', answer: null, isCorrect: null, isTimeout: false, durationMs: 0 },
+    ])
+  })
+
+  it('交卷响应与 GET report 同构：同会话两形状逐字段一致（成绩单从库重算，交卷后可随时回看）', async () => {
+    const [judgementId, politicalId, commonId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [politicalId, commonId, judgementId])
+    await insertMockAnswerRow(sessionId, politicalId, { answer: 'B', durationMs: 5_000 })
+    await insertMockAnswerRow(sessionId, commonId, { answer: 'A', durationMs: 6_000 })
+
+    const submitted = await submitSession(sessionId, token)
+    expect(submitted.status).toBe(200)
+    const report = await fetchReport(sessionId, token)
+    expect(report.status).toBe(200)
+    expect(report.body).toEqual(submitted.body)
   })
 })

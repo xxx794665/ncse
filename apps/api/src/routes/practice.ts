@@ -12,7 +12,6 @@ import type {
   QuestionOption,
   RichContent,
   SubmitPracticeAnswerResponse,
-  WrongBookContext,
   WrongBookRedoSource,
   XingceModuleCode,
 } from '@ncse/shared'
@@ -20,6 +19,7 @@ import { createDb, type DbClient } from '../db'
 import { modules, practiceRecords, practiceSessions, questions, wrongBook } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import { projectRichContent } from './rich-content-project'
+import { applyWrongBookStateMachine } from './wrong-book-machine'
 import type { AppEnv } from '../types'
 
 /**
@@ -289,52 +289,6 @@ function toQuestionDtos(
 type PracticeSessionRow = typeof practiceSessions.$inferSelect
 
 /**
- * 错题本状态机（ADR-0010）：
- * - 答错（无论是否在册）：upsert 复用 user+question 行——插入分支 active/wrongCount=1/redoCount=0/连对 0；
- *   冲突分支回 active（eliminated/hard 复活）、wrongCount 与 redoCount 按行自引用累加、连对清零；
- * - 答对且在册（任意 status）：redoCount/连对累加，status 不动（消灭由用户处置端点翻转）；
- * - 答对不在册：无操作。
- * updatedAt 显式给值（$onUpdate 在 upsert 冲突分支等路径不触发，不依赖它）。
- * 返回状态机执行后的条目上下文（null = 不在册且答对）。
- */
-async function applyWrongBookStateMachine(
-  db: DbClient,
-  userId: number,
-  questionId: number,
-  isCorrect: boolean,
-): Promise<WrongBookContext | null> {
-  const updatedAt = new Date().toISOString()
-  if (!isCorrect) {
-    await db
-      .insert(wrongBook)
-      .values({ userId, questionId, status: 'active', wrongCount: 1, redoCount: 0, consecutiveCorrect: 0, updatedAt })
-      .onConflictDoUpdate({
-        target: [wrongBook.userId, wrongBook.questionId],
-        set: {
-          status: 'active',
-          wrongCount: sql`${wrongBook.wrongCount} + 1`,
-          redoCount: sql`${wrongBook.redoCount} + 1`,
-          consecutiveCorrect: 0,
-          updatedAt,
-        },
-      })
-    return { status: 'active' }
-  }
-  // 答对：仅行存在时累加（returning 空数组 = 不在册，无操作）；status 原样带回供响应上下文
-  const updated = await db
-    .update(wrongBook)
-    .set({
-      redoCount: sql`${wrongBook.redoCount} + 1`,
-      consecutiveCorrect: sql`${wrongBook.consecutiveCorrect} + 1`,
-      updatedAt,
-    })
-    .where(and(eq(wrongBook.userId, userId), eq(wrongBook.questionId, questionId)))
-    .returning({ status: wrongBook.status })
-  const row = updated[0]
-  return row === undefined ? null : { status: row.status }
-}
-
-/**
  * 会话是否已全部作答（finished 判定，ADR-0009）：实际存在的题目数 == 本会话有作答记录的题目数
  * （两 Map 均以 questionId 为键去重；清单内悬空 id 不阻塞完成——题删记录亦级联删）。
  */
@@ -581,7 +535,7 @@ practiceRoute.post('/sessions/:id/answers', async (c) => {
     sessionId: String(session.id),
   })
 
-  // 错题本状态机（ADR-0010）：答错复活在册，答对在册累加重做与连对
+  // 错题本状态机（ADR-0010，共享实现见 wrong-book-machine.ts）：答错复活在册，答对在册累加重做与连对
   const wrongBookContext = await applyWrongBookStateMachine(db, authUser.id, questionId, isCorrect)
 
   // 会话 finished 判定（ADR-0009）：全部作答后翻状态（updatedAt 显式给值，同上不依赖 $onUpdate）

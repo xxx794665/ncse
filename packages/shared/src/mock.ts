@@ -1,8 +1,7 @@
 /**
- * 整卷模考推导与 DTO（T2-01b，M2 拆片定稿 D2/D3/D4/D6）：
+ * 整卷模考推导与 DTO（T2-01b，M2 拆片定稿 D2/D3/D4/D5/D6/D8）：
  * 试卷完整度分档（D2）与默认整卷时长推导（D3）为纯函数——前后端共用同一口径，勿单方改阈值；
- * DTO 覆盖试卷目录、模考会话生命周期（建会话/列表/详情）与作答/计时上报。
- * 交卷 DTO 由后续片在本文件追加（MockAnsweredInfo 已为其预留落位）。
+ * DTO 覆盖试卷目录、模考会话生命周期（建会话/列表/详情）、作答/计时上报与交卷成绩单。
  * 类型依赖 index.ts 的数据层同构类型（type-only 导入，编译后无运行时循环）。
  */
 import type { XingceModuleCode } from './blueprint.js'
@@ -194,4 +193,80 @@ export interface UpdateMockTimerRequest {
 export interface UpdateMockTimerResponse {
   /** 计时累计落库值（毫秒，与请求值的较大者——防回退） */
   elapsedMs: number
+}
+
+/* ============ 交卷判分与成绩单 DTO（T2-01b 第五子片，D4/D5/D8） ============ */
+
+/**
+ * 模考成绩单总览聚合（MockSessionReport.summary）。
+ * 计数给、率不给：正确率等由前端派生（沿用 PracticeOverallStats 先例，服务端不预计算，
+ * 除零兜底归前端处理）。
+ */
+export interface MockReportSummary {
+  /** 题目总数（快照内实际存在题目行的题数，悬空 id 不计——与交卷判分口径一致） */
+  total: number
+  /** 已答题数（已判分行数；交卷后已答行恒已判分，abandoned 未判分行不计） */
+  answered: number
+  /** 答对题数 */
+  correct: number
+  /** 未答题数（total - answered） */
+  unanswered: number
+  /** 超时题数（已判分行 isTimeout 计数；D5 仅供成绩单分析） */
+  timeoutCount: number
+  /** 已判分行用时合计（毫秒） */
+  totalDurationMs: number
+}
+
+/**
+ * 模考成绩单分模块聚合（MockSessionReport.modules 项）。
+ * 仅列卷内实际出现的模块（蓝图含但卷内无题的模块不出现）；聚合口径同 summary（已答 = 已判分行）。
+ */
+export interface MockModuleReport {
+  /** 行测模块编码 */
+  moduleCode: XingceModuleCode
+  /** 该模块题目总数（悬空 id 不计） */
+  total: number
+  /** 该模块已答题数（已判分行数） */
+  answered: number
+  /** 该模块答对题数 */
+  correct: number
+  /** 该模块超时题数 */
+  timeoutCount: number
+  /** 该模块已判分行用时合计（毫秒） */
+  totalDurationMs: number
+}
+
+/**
+ * 模考成绩单逐题项（MockSessionReport.questions 项），供前端对错答题卡回顾。
+ * 刻意不含正确答案与解析：交卷后回发正确答案虽合法，但本端点保持克制——
+ * 成绩单页要展示解析走既有题目详情或后续需求。
+ */
+export interface MockReportQuestionItem {
+  /** 题目 id（questions 表主键） */
+  questionId: number
+  /** 行测模块编码 */
+  moduleCode: XingceModuleCode
+  /** 用户作答（单选为选项键，如 'A'；null = 未作答） */
+  answer: string | null
+  /** 判分结果（null = 未作答未判分；交卷后已答行恒非空） */
+  isCorrect: boolean | null
+  /** 是否超时（D5：按蓝图每题时限严格大于判超时，等于不超；未作答恒 false） */
+  isTimeout: boolean
+  /** 本题用时（毫秒；未作答恒 0） */
+  durationMs: number
+}
+
+/**
+ * POST /api/mock/sessions/:id/submit 与 GET /api/mock/sessions/:id/report 响应体
+ * （交卷即回成绩单，两形状逐字段一致；report 全部从库重算，交卷后可随时回看）。
+ * submit 对非 in_progress 会话 400（交卷即定卷，重复交卷拒绝）；report 对 in_progress
+ * 会话 400（成绩单只对已定卷会话有意义），submitted/abandoned 均可取。
+ */
+export interface MockSessionReport {
+  /** 总览聚合 */
+  summary: MockReportSummary
+  /** 分模块聚合（序 = 蓝图 modules 序，蓝图未含的模块按编码字典序殿后） */
+  modules: MockModuleReport[]
+  /** 逐题项（序 = questionIds 快照序 = 开考时卷内题序；悬空 id 跳过） */
+  questions: MockReportQuestionItem[]
 }

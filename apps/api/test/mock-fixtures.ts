@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm'
+import type { XingceModuleCode } from '@ncse/shared'
 import { DEFAULT_BLUEPRINT_CODE } from '@ncse/shared'
 import {
+  blueprintModules,
   blueprints,
   mockAnswers,
   mockSessions,
@@ -59,6 +61,35 @@ export async function insertBlueprintRow(subjectId: number, code: string = DEFAU
   const id = rows.at(0)?.id
   if (id === undefined) throw new Error('blueprints 插入未返回 id')
   return id
+}
+
+/** 蓝图模块明细直插项（与 shared BlueprintModulePlan 同构；序 = 插入序 = 蓝图模块序） */
+export interface BlueprintModulePlanInput {
+  module: XingceModuleCode
+  questionCount: number
+  timeLimitMinutes: number
+}
+
+/**
+ * 给既有蓝图行挂模块明细（交卷判分超时推导与成绩单模块排序的夹具；insertBlueprintRow
+ * 缺省不挂明细——空明细即蓝图防御分支夹具）。每题秒数由被测端点经 shared 推导：
+ * floor(questionCount→时长/题量) 钳 1，选小值让边界断言更清晰。
+ */
+export async function linkBlueprintModules(
+  blueprintId: number,
+  moduleIds: Map<XingceModuleCode, number>,
+  plans: BlueprintModulePlanInput[],
+): Promise<void> {
+  for (const plan of plans) {
+    const moduleId = moduleIds.get(plan.module)
+    if (moduleId === undefined) throw new Error(`模块 ${plan.module} 的模块行 id 缺失`)
+    await db.insert(blueprintModules).values({
+      blueprintId,
+      moduleId,
+      questionCount: plan.questionCount,
+      timeLimitMinutes: plan.timeLimitMinutes,
+    })
+  }
 }
 
 /** 模考夹具整体（insertMockFixture 的产出） */

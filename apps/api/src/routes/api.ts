@@ -25,8 +25,9 @@ import { wrongBookRoute } from './wrong-book'
  *   overall/modules 全历史聚合 + daily 近 30 天北京日趋势，全路由 requireAuth）；
  * - T2-01b（已落地）试卷目录：papersRoute → /api/papers/*（GET / 全量卷目录，
  *   完整度分档 D2，全路由 requireAuth）；
- * - T2-01b（已落地）整卷模拟·模考会话：mockRoute → /api/mock/*（建会话/列表/详情，
- *   时长锁定 D3、作答中不下发答案 D4、计时累计 D6，全路由 requireAuth；作答/交卷端点为后续片）；
+ * - T2-01b（已落地）整卷模拟·模考会话：mockRoute → /api/mock/*（建会话/列表/详情/作答/计时/
+ *   交卷判分/成绩单——时长锁定 D3、作答中不下发答案 D4、交卷统一判分与错题本联动 D8、
+ *   计时累计 D6，全路由 requireAuth；模考后端数据面就绪）；
  * - AI 代理（ADR-0005）：aiRoute → /api/ai/*（申论批改、AI 参考答案等 POST 转发）；
  * - 题库、做题记录等其余业务域：按任务进展追加。
  */
