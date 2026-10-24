@@ -2,7 +2,8 @@
  * 应用根组件：路由全量注册（按 app-routes 注册表生成，单一权威来源）
  * - 实页：/ 首页仪表盘骨架、/design 组件库演示、/login 登录、/register 注册（T1-16）、
  *   /practice 专项刷题模块选择（T1-08f）、/practice/sessions/:id 专项刷题作答（T1-08g）、
- *   /review 错题/难点/收藏三视图（T1-10b）、/stats 基础统计（T1-11b）
+ *   /mock 整卷模考卷选（T2-01c）、/review 错题/难点/收藏三视图（T1-10b）、/stats 基础统计（T1-11b）
+ * - /mock/sessions/:id 模考作答在 T2-01d 落地前渲染占位形态（注册表 mock-session 分支显式映射 PlaceholderPage）
  * - requiresAuth 路由（如 /practice）经 RequireAuth 守卫：restoring 加载态 / 匿名跳 /login
  * - 未实现功能按注册表统一渲染 EmptyPlaceholder（设计规范 §6.7）；未匹配路由 fallback NotFoundPage
  * - 全站套 AppLayout（PC TopNav / 移动 BottomTab + 主题三态控件）
@@ -18,6 +19,7 @@ import { RegisterPage } from './features/auth/register-page'
 import { RequireAuth } from './features/auth/require-auth'
 import { DesignDemoPage } from './features/design-demo/design-demo-page'
 import { HomePage } from './features/home/home-page'
+import { MockPage } from './features/mock/mock-page'
 import { NotFoundPage, PlaceholderPage } from './features/placeholder/placeholder-page'
 import { PracticePage } from './features/practice/practice-page'
 import { PracticeSessionPage } from './features/practice/session-page'
@@ -55,6 +57,27 @@ export function App() {
             }
             if (route.kind === 'practice-session') {
               const page = <PracticeSessionPage />
+              return (
+                <Route
+                  key={route.key}
+                  path={route.path}
+                  element={route.requiresAuth ? <RequireAuth>{page}</RequireAuth> : page}
+                />
+              )
+            }
+            if (route.kind === 'mock') {
+              const page = <MockPage />
+              return (
+                <Route
+                  key={route.key}
+                  path={route.path}
+                  element={route.requiresAuth ? <RequireAuth>{page}</RequireAuth> : page}
+                />
+              )
+            }
+            if (route.kind === 'mock-session') {
+              // 模考作答页（T2-01d）落地前显式渲染占位形态（milestone/description 取自注册表）
+              const page = <PlaceholderPage route={route} />
               return (
                 <Route
                   key={route.key}

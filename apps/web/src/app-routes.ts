@@ -21,7 +21,7 @@ import {
   UserPlus,
 } from 'lucide-react'
 
-/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；review=错题/难点/收藏三视图实页（T1-10b）；stats=基础统计实页（T1-11b）；placeholder=未实现功能占位 */
+/** 页面形态：home=首页仪表盘骨架；design=组件演示实页；login/register=认证实页（T1-16）；practice=专项刷题模块选择实页（T1-08f）；practice-session=专项刷题作答实页（T1-08g）；mock=整卷模考卷选实页（T2-01c）；mock-session=整卷模考作答占位（T2-01d 落地前渲染占位形态）；review=错题/难点/收藏三视图实页（T1-10b）；stats=基础统计实页（T1-11b）；placeholder=未实现功能占位 */
 export type AppRouteKind =
   | 'home'
   | 'design'
@@ -29,6 +29,8 @@ export type AppRouteKind =
   | 'register'
   | 'practice'
   | 'practice-session'
+  | 'mock'
+  | 'mock-session'
   | 'review'
   | 'stats'
   | 'placeholder'
@@ -46,7 +48,7 @@ export interface AppRoute {
   requiresAuth?: boolean
   /** 内部路由（T1-08f）：不进首页速记入口（如作答页等二级页，仅经页内导航到达） */
   internal?: boolean
-  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session/review/stats）不设 */
+  /** 占位页里程碑徽章（功能清单 M 阶段）；实页（home/design/login/register/practice/practice-session/mock/review/stats）不设，mock-session 作答占位沿用（T2-01d 落地后移除） */
   milestone?: string
   /** 占位页「未完成」一句说明 */
   description?: string
@@ -85,10 +87,20 @@ export const APP_ROUTES: AppRoute[] = [
     key: 'mock',
     title: '整卷模考',
     icon: FileText,
-    kind: 'placeholder',
-    milestone: 'M2',
-    description: '按真题整卷与真实时长的计时模拟考试，交卷判分并出成绩单（功能清单 F2）。',
+    kind: 'mock',
+    requiresAuth: true,
     summary: '真题整卷计时模考与成绩单',
+  },
+  {
+    path: '/mock/sessions/:id',
+    key: 'mock-session',
+    title: '整卷模考 · 作答',
+    icon: FileText,
+    kind: 'mock-session',
+    requiresAuth: true,
+    internal: true,
+    milestone: 'M2',
+    description: '模考作答页（T2-01d）',
   },
   {
     path: '/review',

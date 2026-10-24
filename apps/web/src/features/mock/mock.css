@@ -1,0 +1,387 @@
+/* 整卷模考·卷选页（T2-01c）：进行中会话 + 四维筛选 + 卷列表栅格 + 开考确认弹窗
+   移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
+   字面量均为规范定值：图标 16/24（§5 行内/功能入口档）、焦点环 2px（§6.1）、1px 边框（例外） */
+
+.mock-hero {
+  margin-bottom: var(--spacing-xl);
+}
+
+.mock-hero__title {
+  margin: 0 0 var(--spacing-xs);
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+@media (min-width: 1024px) {
+  .mock-hero__title {
+    font-size: var(--font-size-h1);
+  }
+}
+
+.mock-hero__desc {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-secondary);
+}
+
+.mock-section {
+  margin-bottom: var(--spacing-2xl);
+}
+
+.mock-section__head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.mock-section__title {
+  margin: 0;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+/* ===== 进行中模考 ===== */
+
+/* 会话卡片栅格：移动 1 列 / 平板 2 列 / PC 3 列（与卷列表同栅格口径） */
+.mock-sessions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .mock-sessions {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .mock-sessions {
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+.mock-session {
+  display: flex;
+  flex-direction: column;
+  /* grid item 自动最小尺寸取内容 min-content（长卷名 nowrap 整行 ~494px 会撑破 1fr 列），
+     min-width:0 覆盖后 1fr 列才真正约束卡宽，内部 __name 的 ellipsis 随之生效（390px 实测修复） */
+  min-width: 0;
+  gap: var(--spacing-md);
+}
+
+.mock-session__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+/* 卷名可能较长：单行省略，给「进行中」Tag 让位 */
+.mock-session__name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+/* 进度条：轨道高取 --spacing-xs，填充主色；宽度百分比由组件内联（数据驱动） */
+.mock-session__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.mock-session__progress-track {
+  flex: 1;
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.mock-session__progress-fill {
+  height: 100%;
+  background-color: var(--color-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--duration-normal) var(--easing-standard);
+}
+
+/* 进度数值：mono + tabular-nums（§3.1） */
+.mock-session__progress-text {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
+
+.mock-session__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.mock-session__duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  font-size: var(--font-size-aux);
+  color: var(--color-text-tertiary);
+}
+
+.mock-session__duration > svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ===== 筛选器 ===== */
+
+/* 筛选栅格：移动 1 列 / 平板 2 列 / PC 4 列（§4.2 栅格，移动优先） */
+.mock-filters {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+@media (min-width: 768px) {
+  .mock-filters {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .mock-filters {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* ===== 卷列表 ===== */
+
+/* 卷卡栅格：移动 1 列 / 平板 2 列 / PC 3 列（骨架与实卡共用同一栅格，切换不跳版式） */
+.mock-papers {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--spacing-md);
+}
+
+@media (min-width: 768px) {
+  .mock-papers {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .mock-papers {
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--spacing-lg);
+  }
+}
+
+.mock-paper {
+  display: flex;
+  flex-direction: column;
+  /* 同 .mock-session：grid item 长卷名两行截断生效的前提（line-clamp 需容器宽受限） */
+  min-width: 0;
+  gap: var(--spacing-sm);
+  height: 100%;
+}
+
+.mock-paper:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.mock-paper__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-xs);
+}
+
+/* 功能入口图标 24px 档（§5） */
+.mock-paper__icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-top: var(--spacing-3xs);
+  color: var(--color-primary-text);
+}
+
+/* 卷名两行截断（真题卷名普遍较长，超出省略不撑版式） */
+.mock-paper__name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-primary);
+}
+
+.mock-paper__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-2xs);
+}
+
+/* 底部行吸底：同排卡片完整度/题数基线对齐 */
+.mock-paper__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-top: auto;
+}
+
+/* 题数：mono + tabular-nums（§3.1） */
+.mock-paper__count {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-aux);
+  color: var(--color-text-secondary);
+}
+
+/* 卷目录加载失败：danger-soft 提示条 + 重试（§6.8 反馈件） */
+.mock-papers__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.mock-papers__error-text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 卷目录骨架（§6.8：bg-muted 圆角块 + 呼吸动画；条高取所代表行的字号 token，宽用百分比） */
+.mock-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+@media (min-width: 1024px) {
+  .mock-skeleton {
+    padding: var(--spacing-lg);
+  }
+}
+
+.mock-skeleton__line {
+  height: var(--font-size-caption);
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-xs);
+  animation: mock-breath var(--duration-breath) var(--easing-standard) infinite;
+}
+
+.mock-skeleton__line--title {
+  width: 60%;
+  height: var(--font-size-title);
+}
+
+.mock-skeleton__line--short {
+  width: 45%;
+}
+
+@keyframes mock-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mock-skeleton__line {
+    animation: none;
+  }
+}
+
+/* ===== 开考确认弹窗 ===== */
+
+.mock-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+/* 开考失败（如 400 时长越界 / 404 试卷不存在）：danger-soft 提示条 */
+.mock-create__error {
+  margin: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-danger-soft);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 卷信息摘要：标签列 + 值列双列排布 */
+.mock-create__meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--spacing-2xs) var(--spacing-md);
+  margin: 0;
+}
+
+.mock-create__meta-row {
+  display: contents;
+}
+
+.mock-create__meta dt {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+}
+
+.mock-create__meta dd {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+/* 题数等数值：mono + tabular-nums（§3.1） */
+.mock-create__meta-num {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.mock-create__hint {
+  margin: var(--spacing-2xs) 0 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
