@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_BLUEPRINT_CODE, type RichContent, type RichSegment } from '@ncse/shared'
-import { blueprints, examTypes, mockSessions, papers, questions, users } from '../src/db/schema'
+import { blueprints, examTypes, mockSessions, papers, questions, reinforceQueue, users } from '../src/db/schema'
 import {
   bearerGet,
   bearerPost,
@@ -32,8 +32,9 @@ import {
  * mock-fixtures 蓝图/试卷/归属/会话/作答直插（卷题集序刻意与题目 id 大小序不同，
  * 验证快照按 question_papers.sequence 取序）。
  * 覆盖生命周期三端点、作答/计时上报两端点（upsert/防回退/已交卷拒绝——交卷即定卷）
- * 与交卷判分/成绩单两端点（统一判分落 isCorrect/isTimeout、错题本联动 D8、
- * summary/modules/questions 聚合口径；判分测试蓝图挂自造小值明细，边界断言清晰）。
+ * 与交卷判分/成绩单两端点（统一判分落 isCorrect/isTimeout、错题本联动 D8、需加强队列
+ * 汇入 M3 D5（T3-01e，模考仅汇入不做出队）、summary/modules/questions 聚合口径；
+ * 判分测试蓝图挂自造小值明细，边界断言清晰）。
  */
 
 /** 测试卷名（mock-fixtures 的 insertMockFixture 固定值，列表/详情字段精确断言共用） */
@@ -723,6 +724,15 @@ describe('交卷判分与成绩单（T2-01b）', () => {
     return requestJson(`/api/mock/sessions/${sessionId}/report`, bearerGet(token))
   }
 
+  /** 直查强化队列行（undefined = 不在册；交卷汇入需加强队列的落库断言用，T3-01e） */
+  async function reinforceRowOf(userId: number, questionId: number) {
+    const rows = await db
+      .select()
+      .from(reinforceQueue)
+      .where(and(eq(reinforceQueue.userId, userId), eq(reinforceQueue.questionId, questionId)))
+    return rows.at(0)
+  }
+
   /* ---------- POST /sessions/:id/submit（交卷统一判分） ---------- */
 
   it('交卷主流程：3 题卷（答对/答错/未答）无请求体 200 回成绩单；isCorrect 库内落值 1/0/null、isTimeout 落 false；summary 计数精确；status 翻 submitted、submittedAt 落值；重复交卷（空对象体）400「会话已交卷」', async () => {
@@ -861,6 +871,51 @@ describe('交卷判分与成绩单（T2-01b）', () => {
       redoCount: 0,
       consecutiveCorrect: 0,
     })
+  })
+
+  /* ---------- 需加强队列联动（T3-01e，M3 D5 同口径汇入；模考仅汇入不做出队） ---------- */
+
+  it('交卷汇入需加强队列：答错 → pending/wrong（resolved 行复活）；答对但超时 → pending/timeout；未答题不入队', async () => {
+    // 蓝图挂小值明细：political_theory 每题 30s（floor(60/2)）——30_001 判超
+    await linkBlueprintModules(fixture.blueprintId, fixture.content.moduleIds, GRADING_PLANS)
+    const [judgementId, wrongId, , correctTimeoutId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [wrongId, correctTimeoutId, judgementId])
+    const userId = await userIdOf('alice')
+    // 前置 resolved 行：交卷答错复活为 pending（M3 D5——resolved 行汇入复活，reason 覆盖）
+    await db.insert(reinforceQueue).values({ userId, questionId: wrongId, reason: 'timeout', status: 'resolved' })
+    // 题库答案缺省 'B'：wrongId 答 A 答错不超时、correctTimeoutId 答 B 答对但超时；judgementId 未答
+    await insertMockAnswerRow(sessionId, wrongId, { answer: 'A', durationMs: 5_000 })
+    await insertMockAnswerRow(sessionId, correctTimeoutId, { answer: 'B', durationMs: 30_001 })
+
+    const { status } = await submitSession(sessionId, token)
+    expect(status).toBe(200)
+
+    // 答错（不超时）：复活 pending、reason 覆盖为 wrong
+    expect(await reinforceRowOf(userId, wrongId)).toMatchObject({ status: 'pending', reason: 'wrong' })
+    // 答对但超时：汇入 pending/timeout（与练习判分同口径）
+    expect(await reinforceRowOf(userId, correctTimeoutId)).toMatchObject({ status: 'pending', reason: 'timeout' })
+    // 未答题：无作答行，天然不汇入
+    expect(await reinforceRowOf(userId, judgementId)).toBeUndefined()
+  })
+
+  it('模考保守口径：答对且不超时不出队——在册 pending 行保持 pending 原样（模考答对非重做，出队只发生在练习判分）', async () => {
+    const [judgementId, wrongId, correctId] = fixture.paperQuestionIds
+    const { token, sessionId } = await createGradingSession('alice', [wrongId, correctId, judgementId])
+    const userId = await userIdOf('alice')
+    // 前置在册 pending 行：correctId 将答对（B、不超时）——保守保持 pending，不做出队
+    await db.insert(reinforceQueue).values({ userId, questionId: correctId, reason: 'wrong', status: 'pending' })
+    // 蓝图缺省无明细（防御分支：全部不判超时）→ correctId 答对即「答对且不超时」
+    await insertMockAnswerRow(sessionId, correctId, { answer: 'B', durationMs: 5_000 })
+    await insertMockAnswerRow(sessionId, wrongId, { answer: 'A', durationMs: 6_000 })
+
+    const { status } = await submitSession(sessionId, token)
+    expect(status).toBe(200)
+
+    // 答对且不超时：在册 pending 行原样保持（模考不做出队——保守口径见 submit 端点内注释）
+    expect(await reinforceRowOf(userId, correctId)).toMatchObject({ status: 'pending', reason: 'wrong' })
+    // 答错照常汇入；未答题不动
+    expect(await reinforceRowOf(userId, wrongId)).toMatchObject({ status: 'pending', reason: 'wrong' })
+    expect(await reinforceRowOf(userId, judgementId)).toBeUndefined()
   })
 
   it('悬空题目 id（快照内但题目行已删）：交卷不炸，成绩单 total 不计悬空、其模块组不出现（无蓝图明细 → 模块序退化为字典序）；悬空题作答行随题级联删', async () => {

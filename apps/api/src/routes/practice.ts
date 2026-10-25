@@ -16,22 +16,26 @@ import type {
   XingceModuleCode,
 } from '@ncse/shared'
 import { createDb, type DbClient } from '../db'
-import { modules, practiceRecords, practiceSessions, questions, wrongBook } from '../db/schema'
+import { modules, practiceRecords, practiceSessions, questions, reinforceQueue, wrongBook } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import { projectRichContent } from './rich-content-project'
+import { ingestReinforce, resolveReinforce } from './reinforce-machine'
 import { applyWrongBookStateMachine } from './wrong-book-machine'
 import type { AppEnv } from '../types'
 
 /**
- * 专项刷题·练习会话域路由（T1-08b/08c/10a，挂载于 /api/practice，见 src/routes/api.ts）：
+ * 专项刷题·练习会话域路由（T1-08b/08c/10a，M3/T3-01e 扩 reinforce 模式，挂载于 /api/practice，
+ * 见 src/routes/api.ts）：
  * - POST /sessions：建会话（判别联合，mode 省缺 = 'module' 向后兼容）——
  *   module 分支按模块抽题（未做过优先、不足按最近作答最旧补齐）；
  *   wrong_redo 分支按错题本/难点本在册条目建重做会话（T1-10a：题目序 = updatedAt 倒序，
- *   最近变化在前；moduleCode null → 判分不判超时）；201 返回会话详情；
+ *   最近变化在前；moduleCode null → 判分不判超时）；
+ *   reinforce 分支按需加强清单 pending 条目建强化会话（M3/T3-01e：题目序 = updatedAt 倒序，
+ *   最近汇入在前；moduleCode null → 判分超时按题目所属模块推导）；201 返回会话详情；
  * - GET /sessions/:id：会话详情（题目富片段不含答案/解析——服务端判分共识；图片段投影 /api/img URL）；
  * - GET /sessions：当前用户活动会话列表（只列 in_progress，createdAt 倒序）；
  * - POST /sessions/:id/answers：判分（practice_records append-only 落库 + 错题本状态机 ADR-0010
- *   + 会话 finished 判定 ADR-0009），correctAnswer/analysis 仅判分后回发。
+ *   + 需加强队列联动 M3 D5 + 会话 finished 判定 ADR-0009），correctAnswer/analysis 仅判分后回发。
  * 全端点 requireAuth；业务错误一律抛 HTTPException（中文 message），
  * 由组合根 onError 统一收敛为 ApiErrorBody（沿用既有错误码，不新增）。
  */
@@ -72,12 +76,13 @@ function isXingceModuleCode(value: string): value is XingceModuleCode {
 }
 
 /**
- * 建会话入参的解析结果（判别联合，与 shared CreatePracticeSessionRequest 两分支同构；
+ * 建会话入参的解析结果（判别联合，与 shared CreatePracticeSessionRequest 三分支同构；
  * count 已定缺省）。module 分支省缺 mode 的旧形状与显式 mode='module' 均归入 module 分支。
  */
 type ParsedCreateRequest =
   | { mode: 'module'; module: XingceModuleCode; count: number }
   | { mode: 'wrong_redo'; source: WrongBookRedoSource; count: number }
+  | { mode: 'reinforce'; count: number }
 
 /** wrong_redo 分支的 source 白名单（与 shared WrongBookRedoSource 对齐，两端勿单方扩值） */
 const REDO_SOURCES: readonly WrongBookRedoSource[] = ['active', 'hard']
@@ -95,8 +100,8 @@ function parseCreateRequest(body: unknown): ParsedCreateRequest {
   const { mode, module, source, count } = body as Record<string, unknown>
 
   // mode 省缺 = 'module'（向后兼容：既有 web 调用与全部既有测试不传 mode）；非法值拒绝
-  if (mode !== undefined && mode !== 'module' && mode !== 'wrong_redo') {
-    throw new HTTPException(400, { message: 'mode 必须是 module 或 wrong_redo（字符串；省缺视同 module）' })
+  if (mode !== undefined && mode !== 'module' && mode !== 'wrong_redo' && mode !== 'reinforce') {
+    throw new HTTPException(400, { message: 'mode 必须是 module、wrong_redo 或 reinforce（字符串；省缺视同 module）' })
   }
 
   if (count !== undefined) {
@@ -111,6 +116,11 @@ function parseCreateRequest(body: unknown): ParsedCreateRequest {
       throw new HTTPException(400, { message: `source 必须是 ${REDO_SOURCES.join(' 或 ')}（字符串）` })
     }
     return { mode: 'wrong_redo', source, count: questionCount }
+  }
+
+  if (mode === 'reinforce') {
+    // reinforce 分支仅 count 可选，无其他字段（抽题来源恒为本人强化队列 pending 条目）
+    return { mode: 'reinforce', count: questionCount }
   }
 
   // module 分支（mode 省缺或显式 'module'）
@@ -188,20 +198,38 @@ async function fetchQuestionRows(db: DbClient, questionIds: number[]): Promise<M
   return new Map(rows.map((row) => [row.id, row]))
 }
 
-/** 判分题目行（answer/analysis/options——仅判分端点取用，不进会话详情投影） */
+/**
+ * 判分题目行（answer/analysis/options + 题目所属模块 code——reinforce 会话的超时推导用；
+ * 模块行缺失为 null（防御性不判超时），不改变既有 module/wrong_redo 会话的 grading 行为）。
+ * answer/analysis/options 仅判分端点取用，不进会话详情投影。
+ */
 interface GradingQuestionRow {
+  moduleCode: XingceModuleCode | null
   answer: string
   analysis: RichContent
   options: QuestionOption[]
 }
 
-/** 取单题判分行（undefined = 悬空 id：清单内 id 但题目行已被内容重删的罕见态） */
+/**
+ * 取单题判分行（undefined = 悬空 id：清单内 id 但题目行已被内容重删的罕见态）。
+ * leftJoin modules 取题目所属模块 code：模块行随题目级联删（悬空题在行存在校验已 404，
+ * 理论恒命中；防御性容 null——moduleCode null 时 reinforce 会话亦不判超时）。
+ */
 async function fetchGradingQuestionRow(db: DbClient, questionId: number): Promise<GradingQuestionRow | undefined> {
   const rows = await db
-    .select({ answer: questions.answer, analysis: questions.analysis, options: questions.options })
+    .select({
+      moduleCode: modules.code,
+      answer: questions.answer,
+      analysis: questions.analysis,
+      options: questions.options,
+    })
     .from(questions)
+    .leftJoin(modules, eq(modules.id, questions.moduleId))
     .where(eq(questions.id, questionId))
-  return rows[0]
+  const row = rows[0]
+  // modules.code 库层为无域类型的 TEXT（M1 内容域即行测模块编码），读取处按域值断言
+  //（与 practice_sessions.moduleCode 的 $type<XingceModuleCode> 同一约定，见 wrong-book.ts）
+  return row === undefined ? undefined : { ...row, moduleCode: row.moduleCode as XingceModuleCode | null }
 }
 
 /** 会话内已答回显投影（PracticeAnsweredInfo 的库侧形状） */
@@ -323,15 +351,31 @@ async function selectWrongRedoQuestionIds(
   return rows.map((row) => row.questionId)
 }
 
+/**
+ * 需加强抽题（M3/T3-01e，照 selectWrongRedoQuestionIds 写法）：当前用户 reinforce_queue 中
+ * status='pending' 的待强化条目，取 updatedAt 倒序、id 倒序并列稳定的前 count 个 questionId
+ * ——题目序 = 该序（最近汇入在前）；user+question 唯一保证清单无重复。resolved 条目已出队，天然排除。
+ */
+async function selectReinforceQuestionIds(db: DbClient, userId: number, count: number): Promise<number[]> {
+  const rows = await db
+    .select({ questionId: reinforceQueue.questionId })
+    .from(reinforceQueue)
+    .where(and(eq(reinforceQueue.userId, userId), eq(reinforceQueue.status, 'pending')))
+    .orderBy(desc(reinforceQueue.updatedAt), desc(reinforceQueue.id))
+    .limit(count)
+  return rows.map((row) => row.questionId)
+}
+
 practiceRoute.post('/sessions', async (c) => {
   const request = parseCreateRequest(await readJsonBody(c))
   const authUser = c.get('authUser')
   const db = createDb(c.env)
 
-  /** 会话模式与模块编码（两分支唯一差异；wrong_redo 恒 moduleCode null → 判分不判超时） */
-  let mode: 'module' | 'wrong_redo'
+  /** 会话模式与模块编码（三分支唯一差异；wrong_redo/reinforce 恒 moduleCode null
+   * ——前者判分不判超时，后者超时按题目所属模块推导） */
+  let mode: 'module' | 'wrong_redo' | 'reinforce'
   let moduleCode: XingceModuleCode | null
-  /** 会话题目清单（序 = 抽取序：module 为未做过优先，wrong_redo 为 updatedAt 倒序） */
+  /** 会话题目清单（序 = 抽取序：module 为未做过优先，wrong_redo/reinforce 为 updatedAt 倒序） */
   let questionIds: number[]
 
   if (request.mode === 'wrong_redo') {
@@ -344,6 +388,14 @@ practiceRoute.post('/sessions', async (c) => {
       })
     }
     // 在册条目不足 count 时按实际条数建会话（同模块流惯例，不报错）
+  } else if (request.mode === 'reinforce') {
+    mode = 'reinforce'
+    moduleCode = null
+    questionIds = await selectReinforceQuestionIds(db, authUser.id, request.count)
+    if (questionIds.length === 0) {
+      throw new HTTPException(400, { message: '需加强清单暂无待强化题目' })
+    }
+    // 待强化条目不足 count 时按实际条数建会话（同模块流惯例，不报错）
   } else {
     mode = 'module'
     moduleCode = request.module
@@ -362,7 +414,7 @@ practiceRoute.post('/sessions', async (c) => {
     }
   }
 
-  // 建会话行（两分支共用既有 insert 路径：mode/moduleCode/questionIds 投影与详情/列表 DTO 不需改）
+  // 建会话行（三分支共用既有 insert 路径：mode/moduleCode/questionIds 投影与详情/列表 DTO 不需改）
   const inserted = await db
     .insert(practiceSessions)
     .values({ userId: authUser.id, mode, moduleCode, questionIds })
@@ -517,10 +569,18 @@ practiceRoute.post('/sessions/:id/answers', async (c) => {
   // 服务端判分：单选为选项键比对（答案不随题面下发，判分后才回发——服务端判分共识）
   const isCorrect = answer === questionRow.answer
 
-  // 超时推导：默认标准卷蓝图 × 会话模块的每题时限，严格大于判超时（等于时限不超时）；
-  // moduleCode 为 null（非 module 模式）或蓝图未含该模块 → 不判超时
-  const timeLimitSeconds =
-    session.moduleCode === null ? undefined : deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, session.moduleCode)
+  // 超时推导（严格大于判超时，等于时限不超时）：
+  // - module 会话：默认标准卷蓝图 × 会话模块的每题时限（既有路径，行为零变更）；
+  // - reinforce 会话（moduleCode null）：默认标准卷蓝图 × 题目所属模块——超时是强化队列的
+  //   汇入条件之一，强化场景必须保留判定，否则「答对但超时」会被误判出队；题目模块行缺失
+  //   不判（防御）；
+  // - 其余 null 模式（wrong_redo 等）：不判超时（M1 设计维持）。
+  let timeLimitSeconds: number | undefined
+  if (session.moduleCode !== null) {
+    timeLimitSeconds = deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, session.moduleCode)
+  } else if (session.mode === 'reinforce' && questionRow.moduleCode !== null) {
+    timeLimitSeconds = deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, questionRow.moduleCode)
+  }
   const isTimeout = timeLimitSeconds !== undefined && durationMs > timeLimitSeconds * 1000
 
   // 作答记录落库（append-only：同题重复提交每次一行，不去重不覆盖；mode/sessionId 取自会话）
@@ -537,6 +597,15 @@ practiceRoute.post('/sessions/:id/answers', async (c) => {
 
   // 错题本状态机（ADR-0010，共享实现见 wrong-book-machine.ts）：答错复活在册，答对在册累加重做与连对
   const wrongBookContext = await applyWrongBookStateMachine(db, authUser.id, questionId, isCorrect)
+
+  // 需加强队列联动（M3 D5，共享实现见 reinforce-machine.ts）：答错或超时（含答对但超时——
+  // 超时=不熟练）汇入 pending 并覆盖 reason（答错且超时同用记 wrong——答错优先）；
+  // 答对且不超时出队（在册行置 resolved，不在册不建行）
+  if (!isCorrect || isTimeout) {
+    await ingestReinforce(db, authUser.id, questionId, isCorrect ? 'timeout' : 'wrong')
+  } else {
+    await resolveReinforce(db, authUser.id, questionId)
+  }
 
   // 会话 finished 判定（ADR-0009）：全部作答后翻状态（updatedAt 显式给值，同上不依赖 $onUpdate）
   let sessionStatus: PracticeSessionStatus = session.status

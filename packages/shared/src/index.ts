@@ -3,6 +3,7 @@
  * 已承载：统一错误信封、数据层同构类型（富片段、枚举，T1-02 起与 Drizzle schema 共用）、
  * 考试蓝图与每题时限推导（T1-07，见 blueprint.ts）、练习会话 DTO（T1-08b）、
  * 判分与错题本 DTO（T1-08c）、错题本/难点本列表与收藏 DTO 及建会话 wrong_redo 模式（T1-10a）、
+ * 需加强清单 DTO 与建会话 reinforce 模式（M3/T3-01e）、
  * 统计汇总 DTO（T1-11a）、整卷模考推导与 DTO（T2-01b，见 mock.ts）、
  * 知识点树常量/校验与树查询 DTO（M3/T3-01a，见 knowledge-tree.ts，ADR-0013）；
  * 后续将承载：其余业务 DTO 等。
@@ -90,8 +91,8 @@ export type QuestionDifficulty = 'easy' | 'medium' | 'hard'
 /** 知识点打标来源：官方 / AI 打标 / 人工校对 */
 export type TagSource = 'official' | 'ai' | 'human_verified'
 
-/** 逐题练习模式：按模块专项 / 按知识点专项 / 随机 / 错题重做 */
-export type PracticeMode = 'module' | 'knowledge' | 'random' | 'wrong_redo'
+/** 逐题练习模式：按模块专项 / 按知识点专项 / 随机 / 错题重做 / 需加强强化 */
+export type PracticeMode = 'module' | 'knowledge' | 'random' | 'wrong_redo' | 'reinforce'
 
 /** 练习会话状态（in_progress 支持中断跨设备续做；abandoned = 用户显式放弃） */
 export type PracticeSessionStatus = 'in_progress' | 'finished' | 'abandoned'
@@ -153,11 +154,13 @@ export interface MeResponse {
 /* ============ 练习会话 DTO（T1-08b 定稿，前端 T1-08f 直接复用） ============ */
 
 /**
- * POST /api/practice/sessions 请求体（判别联合，按 mode 分支，T1-10a 扩展）：
+ * POST /api/practice/sessions 请求体（判别联合，按 mode 分支，T1-10a 扩展、M3/T3-01e 再扩展）：
  * - module 分支：按行测模块抽题（mode 省缺视同 'module'——既有 web 调用与 M1 前端不传 mode，
  *   向后兼容零改动）；
- * - wrong_redo 分支：按错题本/难点本在册条目重做（题目序 = wrong_book.updatedAt 倒序）。
- * 两分支 count 取值 5/10/20/30（与前端模块选择页的题数选项一致，勿单方扩值），缺省 10；
+ * - wrong_redo 分支：按错题本/难点本在册条目重做（题目序 = wrong_book.updatedAt 倒序）；
+ * - reinforce 分支：按需加强清单 pending 题目建会话（题目序 = reinforce_queue.updatedAt 倒序，
+ *   最近汇入在前）。
+ * 三分支 count 取值 5/10/20/30（与前端模块选择页的题数选项一致，勿单方扩值），缺省 10；
  * 题目不足 count 时按实际数建会话（不报错），为 0 时 400。
  */
 export type CreatePracticeSessionRequest =
@@ -174,6 +177,12 @@ export type CreatePracticeSessionRequest =
       mode: 'wrong_redo'
       /** 重做来源：'active' 错题本 / 'hard' 难点本（非法值 400） */
       source: WrongBookRedoSource
+      /** 题目数量（5/10/20/30，缺省 10） */
+      count?: number
+    }
+  | {
+      /** 需加强强化模式（M3/T3-01e）：按需加强清单 pending 题目建会话，题目序 = updatedAt 倒序（最近汇入在前） */
+      mode: 'reinforce'
       /** 题目数量（5/10/20/30，缺省 10） */
       count?: number
     }
@@ -380,6 +389,33 @@ export interface FavoriteToggleResponse {
   questionId: number
   /** 操作后是否在收藏（POST 恒 true、DELETE 恒 false） */
   favorited: boolean
+}
+
+/* ============ 需加强清单 DTO（M3/T3-01e 定稿） ============ */
+
+/**
+ * GET /api/reinforce?status=pending|resolved 列表项（需加强清单，M3/T3-01e）。
+ * 全自动强化队列（与错题本并存：错题本是用户处置状态机，本队列无任何用户处置动作）：
+ * 汇入（答错/超时，练习判分与模考交卷同口径）与出队（仅练习判分答对且不超时）由判分联动。
+ * status 缺省 'pending'，仅容 'pending'|'resolved'（白名单外 400）；
+ * 排序 updatedAt 倒序（最近汇入在前），id 倒序并列稳定。
+ */
+export interface ReinforceEntrySummary {
+  /** 题目 id（questions 表主键） */
+  questionId: number
+  /** 行测模块编码（题目当前所属模块；悬空题行整条跳过，故恒非空） */
+  moduleCode: XingceModuleCode
+  /**
+   * 题干预览（服务端生成）：stem 的 text 段以空格连接，超 80 字符截断加「…」；
+   * 无 text 段（纯图题）为「（图片题）」。
+   */
+  stemPreview: string
+  /** 汇入原因（最近一次触发覆盖：答错 'wrong' / 答对但超时 'timeout'；答错且超时同用记 wrong） */
+  reason: ReinforceReason
+  /** 条目状态（列表恒为查询指定的 pending 或 resolved） */
+  status: ReinforceStatus
+  /** 最近变化时间（ISO-8601 UTC，汇入/出队均刷新） */
+  updatedAt: string
 }
 
 /* ============ 统计 DTO（T1-11a 定稿，前端 T1-11b 直接复用） ============ */

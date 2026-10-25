@@ -7,6 +7,7 @@ import { knowledgeRoute } from './knowledge'
 import { mockRoute } from './mock'
 import { papersRoute } from './papers'
 import { practiceRoute } from './practice'
+import { reinforceRoute } from './reinforce'
 import { statsRoute } from './stats'
 import { wrongBookRoute } from './wrong-book'
 
@@ -31,6 +32,9 @@ import { wrongBookRoute } from './wrong-book'
  *   计时累计 D6，全路由 requireAuth；模考后端数据面就绪）；
  * - M3/T3-01a（已落地）知识点树：knowledgeRoute → /api/knowledge/*（GET /tree 全量
  *   三级嵌套树，数据源 importer 种子（ADR-0013 两级树+版本化种子），全路由 requireAuth）；
+ * - M3/T3-01e（已落地）需加强清单：reinforceRoute → /api/reinforce/*（GET / 强化队列列表，
+ *   全自动队列——汇入/出队由练习判分与模考交卷联动（M3 D5），无用户处置端点；建强化会话走
+ *   POST /api/practice/sessions 的 reinforce 分支，全路由 requireAuth）；
  * - AI 代理（ADR-0005）：aiRoute → /api/ai/*（申论批改、AI 参考答案等 POST 转发）；
  * - 题库、做题记录等其余业务域：按任务进展追加。
  */
@@ -62,3 +66,6 @@ apiRoute.route('/mock', mockRoute)
 
 // 知识点域：全端点 requireAuth（子路由内部 use），树形态与种子入库见 ADR-0013
 apiRoute.route('/knowledge', knowledgeRoute)
+
+// 需加强清单域：全端点 requireAuth（子路由内部 use），全自动队列口径（M3 D5）见 reinforceRoute 文件头
+apiRoute.route('/reinforce', reinforceRoute)

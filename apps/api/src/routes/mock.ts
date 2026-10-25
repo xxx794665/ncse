@@ -45,6 +45,7 @@ import {
 } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import { projectRichContent } from './rich-content-project'
+import { ingestReinforce } from './reinforce-machine'
 import { applyWrongBookStateMachine } from './wrong-book-machine'
 import type { AppEnv } from '../types'
 
@@ -61,7 +62,8 @@ import type { AppEnv } from '../types'
  * - POST /sessions/:id/submit：交卷统一判分（D4）——逐已作答行落 mock_answers.isCorrect 与
  *   isTimeout（D5 超时按蓝图每题时限严格大于判，与练习判分同口径；蓝图行缺失/空明细防御性
  *   全不判超时）、答错题联动错题本状态机（D8 复用共享 wrong-book-machine.ts；答对/未答不联动
- *   ——模考答对非重做场景）、会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
+ *   ——模考答对非重做场景）、答错/超时题汇入需加强队列（M3 D5 同口径；模考仅汇入不做出队，
+ *   保守口径见 submit 端点内注释）、会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
  *   practice_records（D9，mock_answers 独立承载）；无请求体入参，响应即成绩单（与 report 同形状）；
  * - GET /sessions/:id/report：成绩单聚合（summary/modules/questions 全部从库重算，交卷后可随时
  *   回看；逐题项不含正确答案与解析——展示解析走既有题目详情或后续需求）；
@@ -878,6 +880,14 @@ mockRoute.post('/sessions/:id/submit', async (c) => {
     // 模考是考试场景、答对不是「重做」，故不联动（未答题同样不动）。
     if (!isCorrect) {
       await applyWrongBookStateMachine(db, authUser.id, row.questionId, false)
+    }
+
+    // 需加强队列联动（M3 D5，复用共享 reinforce-machine.ts，与练习判分同口径汇入）：
+    // 答错或超时（含答对但超时）→ pending 并覆盖 reason。模考仅汇入不做出队：答对且不超时
+    // 不置 resolved——模考是考试场景、答对不是「重做」（与错题本 D8 保守解释同一口径），
+    // 在册 pending 行保守保留，由练习判分答对出队；未答题无作答行，天然不汇入。
+    if (!isCorrect || isTimeout) {
+      await ingestReinforce(db, authUser.id, row.questionId, isCorrect ? 'timeout' : 'wrong')
     }
   }
 
