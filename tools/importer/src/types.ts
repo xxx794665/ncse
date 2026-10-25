@@ -205,6 +205,40 @@ export interface DbStageResult {
   issues: ImportIssue[]
 }
 
+/* ============ 打标吸收阶段（M3/T3-01b：tag-in/ staging → tag.sql 幂等 SQL） ============ */
+
+/** runTagStage 入参 */
+export interface TagStageOptions {
+  /** runImport 产物目录（含 import-manifest.json 与 modules/*.json）；tag.sql 写回本目录 */
+  productsDir: string
+  /** 打标运行号（正整数；写入 question_knowledge.tag_version 与 import_runs.version，与 db 命令共用 version 空间全局递增） */
+  version: number
+}
+
+/** 打标统计（import_runs.stats 同结构） */
+export interface TagStageStats {
+  /** 吸收成功的题目数 */
+  taggedQuestions: number
+  /** 写入的题目-知识点 pair 数 */
+  tagPairs: number
+  /** 因 error 跳过的题目数 */
+  skippedQuestions: number
+}
+
+/** runTagStage 返回值（无可吸收产物时 sql/sqlPath 为空串且不写文件——stats/issues 仍有效） */
+export interface TagStageResult {
+  /** 生成的 SQL 全文（UTF-8 无 BOM；同 staging + 同 version 逐字节确定）；未写文件为空串 */
+  sql: string
+  /** SQL 写入路径（绝对路径；恒为产物目录下的 tag.sql）；未写文件为空串 */
+  sqlPath: string
+  /** 实际吸收统计（import_runs 行的 stats 同值；未写文件时仍反映本次处理结果） */
+  stats: TagStageStats
+  /** staging 内容指纹（sha256 hex，按 qid 字典序拼接文件名与内容计算；空 staging 为空串） */
+  inputDigest: string
+  /** 问题清单（error 级跳过记录；收集序 = qid 字典序，确定性） */
+  issues: ImportIssue[]
+}
+
 /* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写；阶段 B 增 R2 上传） ============ */
 
 /** runImagesStage 入参（images 子命令与测试直调共用） */

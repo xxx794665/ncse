@@ -1,7 +1,7 @@
 /**
  * @ncse/importer CLI 入口（T1-04 文本导入；T1-15 增 db 入库子命令；T1-05 增 images
  * 图片子命令；T1-06 增 vision 视觉提取子命令；T2-01a parse 产物增 papers.json
- * 试卷归属清单、db 阶段随之入库 papers/question_papers）。
+ * 试卷归属清单、db 阶段随之入库 papers/question_papers；M3/T3-01b 增 tag 打标吸收子命令）。
  * parse 模式：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录>] --version <导入版本号>
  * db 模式：node dist/main.js db --products <JSON 产物目录> --version <正整数> [--force]
  * （SQL 固定生成至 <产物目录>/import.sql、<产物目录>/blueprints.sql（T2-01b 蓝图种子）
@@ -23,6 +23,11 @@
  * vision-manifest.json；staging 目录固定为产物目录下 vision-in/。回写原子性与
  * 提取范围为两级宿主语义（ADR-0011）：题干/选项必选，解析缺省可入、纯解析键
  * 不进 pending）。
+ * tag 模式：node dist/main.js tag --products <JSON 产物目录> --version <正整数>
+ * （吸收 <产物目录>/tag-in/<qid>.txt 的打标子代理 staging——每题 1–5 个知识点
+ * code 换行分隔，生成幂等 tag.sql：pair upsert（tag_version=运行号、source='ai'）
+ * + 每题替换清理 + import_runs 行；按题原子，非法 qid/code 或数量越界整题跳过记
+ * error；staging 为空不写文件退出 0。SQL 固定生成至 <产物目录>/tag.sql）。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目与归属 pair，均记 warning）；1 = 产物结构无效
@@ -46,8 +51,15 @@ import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { runImagesStage, InvalidInputDirError } from './image-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
 import { InvalidUploadTargetError, MissingWranglerError } from './r2-upload.js'
+import { runTagStage } from './tag-stage.js'
 import { runVisionStage } from './vision-stage.js'
-import type { DbStageResult, ImagesStageResult, RunImportResult, VisionStageResult } from './types.js'
+import type {
+  DbStageResult,
+  ImagesStageResult,
+  RunImportResult,
+  TagStageResult,
+  VisionStageResult,
+} from './types.js'
 
 const USAGE =
   '用法：node dist/main.js --input <xingcezhenti 检出目录> [--output <产物目录，默认 .import-out>] --version <导入版本号>'
@@ -92,6 +104,15 @@ interface VisionCliValues {
   products?: string
 }
 
+/** tag 子命令选项值 */
+interface TagCliValues {
+  products?: string
+  version?: string
+}
+
+const TAG_USAGE =
+  '用法：node dist/main.js tag --products <JSON 产物目录> --version <正整数>（吸收 tag-in/ staging，SQL 生成至 <产物目录>/tag.sql）'
+
 /**
  * CLI 主函数（供测试直接调用；返回退出码，不直接 process.exit 以保证输出冲刷）。
  * argv[0] === 'db' 进入 db 入库模式；argv[0] === 'images' 进入 images 图片模式；
@@ -102,7 +123,77 @@ export async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'db') return runDbCommand(argv.slice(1))
   if (argv[0] === 'images') return runImagesCommand(argv.slice(1))
   if (argv[0] === 'vision') return runVisionCommand(argv.slice(1))
+  if (argv[0] === 'tag') return runTagCommand(argv.slice(1))
   return runParseCommand(argv)
+}
+
+/** tag 打标吸收模式（M3/T3-01b）：tag-in/ staging → 幂等 tag.sql */
+function runTagCommand(argv: string[]): number {
+  let values: TagCliValues
+  try {
+    values = parseArgs({
+      args: argv,
+      options: {
+        products: { type: 'string' },
+        version: { type: 'string' },
+      },
+    }).values
+  } catch (err) {
+    console.error(`参数错误：${err instanceof Error ? err.message : String(err)}\n${TAG_USAGE}`)
+    return 2
+  }
+  const products = values.products
+  const version = values.version
+  if (products === undefined || products === '' || version === undefined || version === '') {
+    console.error(TAG_USAGE)
+    return 2
+  }
+  if (!/^[0-9]+$/.test(version) || Number(version) <= 0) {
+    console.error(`--version 须为正整数：${version}`)
+    return 2
+  }
+  const productsAbs = path.resolve(products)
+  let isDir = false
+  try {
+    isDir = fs.statSync(productsAbs).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) {
+    console.error(`产物目录不存在或不是目录：${productsAbs}`)
+    return 2
+  }
+
+  let result: TagStageResult
+  try {
+    result = runTagStage({ productsDir: productsAbs, version: Number(version) })
+  } catch (err) {
+    // 产物结构无效 → 1；路径越界按用法错误 → 2；其余异常如实上抛（同 db 口径）
+    if (err instanceof InvalidProductsError) {
+      console.error(err.message)
+      return 1
+    }
+    if (err instanceof ImportPathEscapeError) {
+      console.error(err.message)
+      return 2
+    }
+    throw err
+  }
+  if (result.stats.taggedQuestions === 0) {
+    console.log(result.issues.length > 0 ? '无成功吸收的打标产物（问题明细见下方清单）' : '无打标产物（tag-in/ 为空）')
+  } else {
+    console.log(`打标 SQL 已生成：${result.sqlPath}`)
+    console.log(
+      `打标统计：题目 ${result.stats.taggedQuestions}，pair ${result.stats.tagPairs}，跳过 ${result.stats.skippedQuestions}`,
+    )
+  }
+  for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {
+    const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
+    console.error(`[${entry.severity}] ${entry.file}${qid}：${entry.code} — ${entry.message}`)
+  }
+  const hiddenIssues = result.issues.length - PRINT_ISSUE_LIMIT
+  if (hiddenIssues > 0) console.error(`…另有 ${hiddenIssues} 条问题未打印`)
+  return result.issues.some((entry) => entry.severity === 'error') ? 1 : 0
 }
 
 /** parse 模式（T1-04 原行为）：文本导入 → JSON 中间产物 */

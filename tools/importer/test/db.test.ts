@@ -27,8 +27,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { runDbStage, blueprintSeedStatements, knowledgeSeedStatements, InvalidProductsError } from '../src/db-stage.js'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  runDbStage,
+  blueprintSeedStatements,
+  knowledgeSeedStatements,
+  questionModuleIndex,
+  InvalidProductsError,
+} from '../src/db-stage.js'
+import { runTagStage } from '../src/tag-stage.js'
 import { main } from '../src/main.js'
 import { runImport, resolveWithin } from '../src/pipeline.js'
 import { XINGCE_BLUEPRINTS, XINGCE_KNOWLEDGE_TREE } from '@ncse/shared'
@@ -1102,5 +1109,228 @@ describe('CLI db 子命令（main）', () => {
     expect(await main(['db', '--products', path.join(outDir, 'empty-products'), '--version', '3'])).toBe(1)
     // papers.json 缺失（paper_manifest_missing）：旧产物强制先重新 parse
     expect(await main(['db', '--products', path.join(outDir, 'stale-products'), '--version', '3'])).toBe(1)
+  })
+})
+
+/* ============ 打标吸收（M3/T3-01b）：tag-in/ staging → 幂等 tag.sql ============ */
+
+/** qid → 模块（与被测实现同一索引口径，动态挑选夹具题，避免硬编码 qid） */
+const tagModuleByQid = questionModuleIndex(cleanProducts)
+/** 夹具覆盖的模块清单（Map 首见序去重） */
+const tagFixtureModules = [...new Set(tagModuleByQid.values())]
+
+/** 指定模块的第一个夹具 qid */
+function tagFirstQidOf(module: string): string {
+  for (const [qid, code] of tagModuleByQid) {
+    if (code === module) return qid
+  }
+  throw new Error(`夹具产物中无模块 ${module} 的题目`)
+}
+
+/** 指定模块知识点级 code 前若干个（树常量为唯一合法域） */
+function tagPointCodesOf(module: string, count: number): string[] {
+  const entry = XINGCE_KNOWLEDGE_TREE.find((item) => item.module === module)
+  if (entry === undefined) throw new Error(`树中无模块 ${module}`)
+  const codes = entry.topics.flatMap((topic) => topic.points.map((point) => point.code))
+  if (codes.length < count) throw new Error(`模块 ${module} 知识点不足 ${count} 个`)
+  return codes.slice(0, count)
+}
+
+/** 写 staging（键 qid → 文件全文；换行分隔 code） */
+function writeTagStaging(entries: Record<string, string>): void {
+  const stagingDir = path.join(cleanProducts, 'tag-in')
+  fs.mkdirSync(stagingDir, { recursive: true })
+  for (const [qid, content] of Object.entries(entries)) {
+    fs.writeFileSync(path.join(stagingDir, `${qid}.txt`), content, 'utf8')
+  }
+}
+
+/** 打标 pair 行视图：qid + 知识点 code + tag_version + source（序 = qid → kp code） */
+const tagPairRows = (
+  db: DatabaseSync,
+): Array<{ qid: string; code: string; tag_version: number; source: string }> =>
+  rows(
+    db,
+    `SELECT q.qid AS qid, kp.code AS code, qk.tag_version AS tag_version, qk.source AS source
+     FROM question_knowledge qk
+     JOIN questions q ON q.id = qk.question_id
+     JOIN knowledge_points kp ON kp.id = qk.knowledge_point_id
+     ORDER BY q.qid, kp.code`,
+  )
+
+describe('打标吸收（M3/T3-01b，tag-in/ staging → 幂等 tag.sql）', () => {
+  beforeEach(() => {
+    // 每用例独立 staging（目录整体清空）
+    fs.rmSync(path.join(cleanProducts, 'tag-in'), { recursive: true, force: true })
+  })
+
+  it('合法吸收：多题多 code 落 pair（tag_version/source 正确挂对行），空行与重复行容忍去重；import_runs 行记打标统计', () => {
+    expect(tagFixtureModules.length).toBeGreaterThanOrEqual(2)
+    const moduleA = tagFixtureModules[0]
+    const [a1, a2] = tagPointCodesOf(moduleA, 2)
+    const qidA = tagFirstQidOf(moduleA)
+    const moduleB = tagFixtureModules[1]
+    const [b1] = tagPointCodesOf(moduleB, 1)
+    const qidB = tagFirstQidOf(moduleB)
+    // qidA：2 个合法 code + 空行 + 重复行（去重后 2 个）；qidB：1 个 code
+    writeTagStaging({ [qidA]: `${a1}\n\n  ${a2}  \n${a1}\n`, [qidB]: `${b1}\n` })
+
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(result.stats).toEqual({ taggedQuestions: 2, tagPairs: 3, skippedQuestions: 0 })
+    expect(result.issues).toEqual([])
+
+    const db = createDb()
+    db.exec(runDbStage({ productsDir: cleanProducts, version: 1 }).sql)
+    db.exec(result.sql)
+    expect(tagPairRows(db)).toEqual([
+      { qid: qidA, code: a1, tag_version: 9, source: 'ai' },
+      { qid: qidA, code: a2, tag_version: 9, source: 'ai' },
+      { qid: qidB, code: b1, tag_version: 9, source: 'ai' },
+    ])
+    const runs = rows<{ version: number; stats: string }>(db, 'SELECT version, stats FROM import_runs')
+    const tagRun = runs.find((run) => run.version === 9)
+    expect(JSON.parse(tagRun?.stats ?? '{}')).toEqual({ taggedQuestions: 2, tagPairs: 3, skippedQuestions: 0 })
+    db.close()
+  })
+
+  it('未知 qid：整题跳过记 tag_unknown_qid，同批合法题照常吸收', () => {
+    const moduleA = tagFixtureModules[0]
+    const [a1] = tagPointCodesOf(moduleA, 1)
+    const qidA = tagFirstQidOf(moduleA)
+    writeTagStaging({ 'tag-unknown-qid': `${a1}\n`, [qidA]: `${a1}\n` })
+
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(result.stats).toEqual({ taggedQuestions: 1, tagPairs: 1, skippedQuestions: 1 })
+    expect(result.issues).toHaveLength(1)
+    expect(result.issues[0]).toMatchObject({ severity: 'error', code: 'tag_unknown_qid', qid: 'tag-unknown-qid' })
+  })
+
+  it('非法 code 三形态（跨模块 code / 考点级 code / 含引号的杂散内容）：按题原子跳过记 tag_code_invalid', () => {
+    const moduleA = tagFixtureModules[0]
+    const [a1] = tagPointCodesOf(moduleA, 1)
+    const qidA = tagFirstQidOf(moduleA)
+    const moduleB = tagFixtureModules[1]
+    const entryA = XINGCE_KNOWLEDGE_TREE.find((item) => item.module === moduleA)
+    if (entryA === undefined) throw new Error('树中应含夹具模块')
+    const topicCode = entryA.topics[0].code
+    // 杂散内容：含引号的非 code 文本（staging 内容不可信，校验层整题拒绝、绝不进 SQL 字面量）
+    const junkPayload = "not-a-code-'quoted'"
+    // 三个被测 qid 取自 qidA 之外的首见题（避免与合法用例同 qid 覆盖 staging）
+    const qids = [...tagModuleByQid.keys()].filter((qid) => qid !== qidA).slice(0, 3)
+    expect(qids).toHaveLength(3)
+    // 跨模块 code：与该 qid 所属模块不同的模块之知识点 code
+    const crossModuleCode = (qid: string): string => {
+      const own = tagModuleByQid.get(qid)
+      const other = tagFixtureModules.find((code) => code !== own)
+      if (other === undefined) throw new Error('夹具须覆盖至少两个模块')
+      return tagPointCodesOf(other, 1)[0]
+    }
+    writeTagStaging({
+      [qids[0]]: `${crossModuleCode(qids[0])}\n`,
+      [qids[1]]: `${topicCode}\n`,
+      [qids[2]]: `${junkPayload}\n`,
+      [qidA]: `${a1}\n`,
+    })
+
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(result.stats).toEqual({ taggedQuestions: 1, tagPairs: 1, skippedQuestions: 3 })
+    expect(result.issues.map((entry) => entry.code)).toEqual(['tag_code_invalid', 'tag_code_invalid', 'tag_code_invalid'])
+    expect(result.sql).not.toContain(junkPayload)
+    expect(moduleB).toBeDefined()
+  })
+
+  it('数量边界：空文件（0 code）与 6 code 均 tag_count_invalid 跳过（全部跳过不写文件）', () => {
+    const moduleA = tagFixtureModules[0]
+    const sixCodes = tagPointCodesOf(moduleA, 6).join('\n')
+    const qids = tagFixtureModules.slice(0, 2).map((code) => tagFirstQidOf(code))
+    writeTagStaging({ [qids[0]]: '\n  \n', [qids[1]]: `${sixCodes}\n` })
+
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(result.stats.taggedQuestions).toBe(0)
+    expect(result.issues.map((entry) => entry.code)).toEqual(['tag_count_invalid', 'tag_count_invalid'])
+    expect(result.sql).toBe('')
+    expect(result.sqlPath).toBe('')
+  })
+
+  it('替换清理（幂等重打）：qidA 先打 {c1,c2} 再改打 {c1,c3} → 旧 pair c2 被删、新 pair c3 在、tag_version 刷新', () => {
+    const moduleA = tagFixtureModules[0]
+    const [c1, c2, c3] = tagPointCodesOf(moduleA, 3)
+    const qidA = tagFirstQidOf(moduleA)
+
+    writeTagStaging({ [qidA]: `${c1}\n${c2}\n` })
+    const first = runTagStage({ productsDir: cleanProducts, version: 9 })
+    writeTagStaging({ [qidA]: `${c1}\n${c3}\n` })
+    const second = runTagStage({ productsDir: cleanProducts, version: 10 })
+
+    const db = createDb()
+    db.exec(runDbStage({ productsDir: cleanProducts, version: 1 }).sql)
+    db.exec(first.sql)
+    db.exec(second.sql)
+    // 行视图按 kp.code 字典序（BINARY：'mao…' < 'marxist…'），期望按 code 排序
+    expect(tagPairRows(db)).toEqual(
+      [c1, c3]
+        .map((code) => ({ qid: qidA, code, tag_version: 10, source: 'ai' }))
+        .sort((left, right) => (left.code < right.code ? -1 : 1)),
+    )
+    // db 种子（version 1）与两次打标（9/10）各记一行 import_runs
+    expect(rows<{ version: number }>(db, 'SELECT version FROM import_runs ORDER BY version').map((r) => r.version)).toEqual([1, 9, 10])
+    db.close()
+  })
+
+  it('幂等重放：同一 tag.sql 再 exec → pair 快照不变', () => {
+    const moduleA = tagFixtureModules[0]
+    const [a1, a2] = tagPointCodesOf(moduleA, 2)
+    const qidA = tagFirstQidOf(moduleA)
+    writeTagStaging({ [qidA]: `${a1}\n${a2}\n` })
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+
+    const db = createDb()
+    db.exec(runDbStage({ productsDir: cleanProducts, version: 1 }).sql)
+    db.exec(result.sql)
+    const snapshot = tagPairRows(db)
+    db.exec(result.sql)
+    expect(tagPairRows(db)).toEqual(snapshot)
+    db.close()
+  })
+
+  it('字节确定性：同 staging 同 version 两次生成全等；换 version 则 SQL 不同', () => {
+    const moduleA = tagFixtureModules[0]
+    const [a1] = tagPointCodesOf(moduleA, 1)
+    writeTagStaging({ [tagFirstQidOf(moduleA)]: `${a1}\n` })
+    const a = runTagStage({ productsDir: cleanProducts, version: 9 })
+    const b = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(b.sql).toBe(a.sql)
+    const c = runTagStage({ productsDir: cleanProducts, version: 10 })
+    expect(c.sql).not.toBe(a.sql)
+  })
+
+  it('空 staging：tag-in 目录缺失 → sql 为空、CLI 退出 0', async () => {
+    const result = runTagStage({ productsDir: cleanProducts, version: 9 })
+    expect(result.sql).toBe('')
+    expect(result.stats).toEqual({ taggedQuestions: 0, tagPairs: 0, skippedQuestions: 0 })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await main(['tag', '--products', cleanProducts, '--version', '9'])).toBe(0)
+  })
+
+  it('CLI：全部跳过（仅未知 qid）退出 1；合法吸收退出 0', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    writeTagStaging({ 'tag-cli-unknown': 'whatever\n' })
+    expect(await main(['tag', '--products', cleanProducts, '--version', '9'])).toBe(1)
+
+    // 清掉未知 qid 文件后再吸收合法题（staging 只剩合法内容）
+    fs.rmSync(path.join(cleanProducts, 'tag-in', 'tag-cli-unknown.txt'))
+    const moduleA = tagFixtureModules[0]
+    const [a1] = tagPointCodesOf(moduleA, 1)
+    writeTagStaging({ [tagFirstQidOf(moduleA)]: `${a1}\n` })
+    expect(await main(['tag', '--products', cleanProducts, '--version', '9'])).toBe(0)
+  })
+
+  it('CLI 用法错误：缺 --version / version 非正整数 / products 不存在 → 退出 2', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await main(['tag', '--products', cleanProducts])).toBe(2)
+    expect(await main(['tag', '--products', cleanProducts, '--version', 'abc'])).toBe(2)
+    expect(await main(['tag', '--products', cleanProducts, '--version', '0'])).toBe(2)
+    expect(await main(['tag', '--products', path.join(outDir, 'nope'), '--version', '1'])).toBe(2)
   })
 })

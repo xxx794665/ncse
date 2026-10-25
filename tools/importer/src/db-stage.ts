@@ -83,8 +83,8 @@ const GATING_ISSUE_CODES: ReadonlySet<string> = new Set([
   'duplicate_option',
 ])
 
-/** updated_at 刷新表达式（库端时钟，保证 SQL 文本确定性） */
-const UPDATED_AT = "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+/** updated_at 刷新表达式（库端时钟，保证 SQL 文本确定性；tag-stage 复用，T3-01b） */
+export const UPDATED_AT = "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 /** 行测科目 id 的标量子查询（挂公务员考试类型） */
 const XINGCE_SUBJECT_ID = "(SELECT id FROM subjects WHERE exam_type_id=(SELECT id FROM exam_types WHERE code='civil_service') AND code='xingce')"
 
@@ -356,7 +356,8 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function issue(
+/** 问题条目工厂（tag-stage 复用，T3-01b） */
+export function issue(
   severity: ImportIssue['severity'],
   code: string,
   file: string,
@@ -368,8 +369,8 @@ function issue(
 
 /* ============ SQL 字面量与语句构造（全部单行、以 ';' 结尾） ============ */
 
-/** 字符串字面量：' → '' 标准转义（中文内容含引号/分号/换行均安全，换行已在 JSON 序列化中转义） */
-function sqlString(value: string): string {
+/** 字符串字面量：' → '' 标准转义（中文内容含引号/分号/换行均安全，换行已在 JSON 序列化中转义；tag-stage 复用，T3-01b） */
+export function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
@@ -388,8 +389,8 @@ function sqlJson(value: unknown): string {
   return sqlString(JSON.stringify(value))
 }
 
-/** 模块 id 的标量子查询（同卷模块解析，挂行测科目） */
-function moduleIdExpr(code: ModuleCode): string {
+/** 模块 id 的标量子查询（同卷模块解析，挂行测科目；tag-stage 复用，T3-01b） */
+export function moduleIdExpr(code: ModuleCode): string {
   return `(SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='${code}')`
 }
 
@@ -534,6 +535,26 @@ export function knowledgeSeedStatements(tree: readonly ModuleKnowledgeTree[]): s
   }
   statements.push(orphanKnowledgeDelete(tree, seedCodes))
   return statements
+}
+
+/**
+ * qid → 模块 code 索引（M3/T3-01b 打标吸收用）：复用入库产物读取器
+ * （manifest moduleOrder 序 × 卷 items 平铺序），qid 重复保首见（与 parse 去重口径一致）。
+ * 打标侧按 staging 的 qid 查本索引判存在性与归属模块；悬空 qid 不在此报错。
+ */
+export function questionModuleIndex(productsRoot: string): Map<string, ModuleCode> {
+  const manifest = readManifest(productsRoot)
+  const index = new Map<string, ModuleCode>()
+  for (const code of manifest.moduleOrder) {
+    const product = readModuleProduct(productsRoot, code)
+    if (product === null) continue
+    for (const paper of product.papers) {
+      for (const item of paper.items) {
+        if (isDbQuestion(item) && !index.has(item.qid)) index.set(item.qid, code)
+      }
+    }
+  }
+  return index
 }
 
 /** b. 题组 upsert（唯一键 module_id + source_key；year/region/paper_type 可空） */
