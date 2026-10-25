@@ -8,6 +8,11 @@
  *       且恒限定行测科目（他科目蓝图不受影响）；同段另产出独立自包含 blueprints.sql
  *       ——含分类体系定位行（blueprint_modules.module_id 经 modules 表解析，缺六模块
  *       行则标量子查询得 NULL 违反 NOT NULL，故必须随行），远端可轻量单独执行）；
+ *   a3. 知识点种子 upsert（M3/T3-01a：knowledge_points 两级树——考点 parent NULL、
+ *       知识点挂考点，数据源为 shared 的 XINGCE_KNOWLEDGE_TREE 常量，树单一权威源
+ *       见 ADR-0013；生成前 validateKnowledgeTree fail-fast；孤儿清理限定行测六模块，
+ *       级联连带删 question_knowledge 打标行——树结构变更后需重新打标；同段另产出
+ *       独立自包含 knowledge.sql（含分类体系定位行），远端可轻量单独执行）；
  *   b. 题组 upsert（自然键 module_id + source_key；有效题为空的组不生成）；
  *   c. 题目 upsert（自然键 qid；题组题 group_id 经 source_key 子查询链接，独立题 NULL）；
  *   d. 试卷与归属 upsert（T2-01a/ADR-0012：papers 按 name 幂等 upsert、
@@ -29,14 +34,25 @@
  * 时间一律 strftime 库端表达式；不含绝对路径与时间戳字面量；不写 BEGIN/COMMIT
  * （wrangler d1 execute 按文件分句执行，幂等 upsert 保证中断重跑自愈）。
  * 安全：products 根为受信目录（CLI 显式指定），全部派生读写路径一律经 resolveWithin
- * 界内校验（SQL 固定写回 <产物目录>/import.sql 与 <产物目录>/blueprints.sql，
- * 不做任意路径输出）。
+ * 界内校验（SQL 固定写回 <产物目录>/import.sql、<产物目录>/blueprints.sql 与
+ * <产物目录>/knowledge.sql，不做任意路径输出）。
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { XINGCE_BLUEPRINTS, validateBlueprint } from '@ncse/shared'
-import type { BlueprintModulePlan, ExamBlueprint } from '@ncse/shared'
+import {
+  XINGCE_BLUEPRINTS,
+  XINGCE_KNOWLEDGE_TREE,
+  validateBlueprint,
+  validateKnowledgeTree,
+} from '@ncse/shared'
+import type {
+  BlueprintModulePlan,
+  ExamBlueprint,
+  KnowledgePointSeed,
+  KnowledgeTopicSeed,
+  ModuleKnowledgeTree,
+} from '@ncse/shared'
 import { MODULE_FOLDERS, moduleFolderOfCode } from './modules.js'
 import { resolveWithin } from './pipeline.js'
 import type {
@@ -458,6 +474,68 @@ export function blueprintSeedStatements(blueprints: readonly ExamBlueprint[]): s
   return statements
 }
 
+/** a3. 考点行 upsert（唯一键 module_id + code；parent 恒 NULL，sort_order = 模块内考点序 1 起） */
+function knowledgeTopicUpsert(module: ModuleKnowledgeTree['module'], topic: KnowledgeTopicSeed, sortOrder: number): string {
+  return `INSERT INTO knowledge_points (module_id, parent_id, code, name, sort_order) VALUES (${moduleIdExpr(module)}, NULL, ${sqlString(topic.code)}, ${sqlString(topic.name)}, ${sortOrder}) ON CONFLICT(module_id, code) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order, ${UPDATED_AT}`
+}
+
+/** a3. 知识点行 upsert（唯一键 module_id + code；parent 经考点 code 标量子查询解析——语句序上考点行先写，同文件内先后可解析；parent 同时进 DO UPDATE 保持可修复幂等） */
+function knowledgePointUpsert(
+  module: ModuleKnowledgeTree['module'],
+  topicCode: string,
+  point: KnowledgePointSeed,
+  sortOrder: number,
+): string {
+  const parentId = `(SELECT kp.id FROM knowledge_points kp WHERE kp.module_id=${moduleIdExpr(module)} AND kp.code=${sqlString(topicCode)})`
+  return `INSERT INTO knowledge_points (module_id, parent_id, code, name, sort_order) VALUES (${moduleIdExpr(module)}, ${parentId}, ${sqlString(point.code)}, ${sqlString(point.name)}, ${sortOrder}) ON CONFLICT(module_id, code) DO UPDATE SET parent_id=excluded.parent_id, name=excluded.name, sort_order=excluded.sort_order, ${UPDATED_AT}`
+}
+
+/**
+ * a3. 孤儿知识点清理：行测六模块下不在种子集合的节点删除（级联连带删 question_knowledge
+ * 打标行——ADR-0013 后果：树结构变更后需重新打标；限定行测科目防误删他科目知识点）。
+ */
+function orphanKnowledgeDelete(tree: readonly ModuleKnowledgeTree[], seedCodes: string[]): string {
+  const moduleList = tree.map((entry) => `'${entry.module}'`).join(', ')
+  const codeList = seedCodes.map(sqlString).join(', ')
+  return `DELETE FROM knowledge_points WHERE module_id IN (SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code IN (${moduleList})) AND code NOT IN (${codeList})`
+}
+
+/**
+ * a3. 知识点种子 SQL 段（M3/T3-01a）：knowledge_points 两级树 upsert + 孤儿清理。
+ * 目录以参数注入（runDbStage 缺省传 shared 的 XINGCE_KNOWLEDGE_TREE；测试可注入
+ * 假树覆盖校验失败路径）；生成前 validateKnowledgeTree，problems 非空抛错（代码级
+ * 配置错误，fail fast）。语句序确定：模块序 = 目录序、考点序/知识点序 = 树内数组序。
+ */
+export function knowledgeSeedStatements(tree: readonly ModuleKnowledgeTree[]): string[] {
+  const problems = validateKnowledgeTree(tree)
+  if (problems.length > 0) {
+    throw new Error(`知识点树校验失败：${problems.join('；')}`)
+  }
+  // 空种子集（六模块全空树）无法用 NOT IN 表达清理，且 shared 侧常量非空——
+  // 到这里即是代码级配置错误，fail fast 而非静默生成非法 SQL
+  const nodeCount = tree.reduce(
+    (sum, entry) => sum + entry.topics.reduce((topicSum, topic) => topicSum + 1 + topic.points.length, 0),
+    0,
+  )
+  if (nodeCount === 0) {
+    throw new Error('知识点树为空（XINGCE_KNOWLEDGE_TREE 六模块均无节点，无法生成种子 SQL）')
+  }
+  const statements: string[] = []
+  const seedCodes: string[] = []
+  for (const entry of tree) {
+    entry.topics.forEach((topic, topicIndex) => {
+      statements.push(knowledgeTopicUpsert(entry.module, topic, topicIndex + 1))
+      seedCodes.push(topic.code)
+      topic.points.forEach((point, pointIndex) => {
+        statements.push(knowledgePointUpsert(entry.module, topic.code, point, pointIndex + 1))
+        seedCodes.push(point.code)
+      })
+    })
+  }
+  statements.push(orphanKnowledgeDelete(tree, seedCodes))
+  return statements
+}
+
 /** b. 题组 upsert（唯一键 module_id + source_key；year/region/paper_type 可空） */
 function groupUpsert(code: ModuleCode, sourceKey: string, group: DbGroup): string {
   return `INSERT INTO question_groups (module_id, source_key, material, year, region, paper_type) VALUES (${moduleIdExpr(code)}, ${sqlString(sourceKey)}, ${sqlJson(group.material)}, ${sqlNullableInteger(group.year)}, ${sqlNullableString(group.region)}, ${sqlNullableString(group.paperType)}) ON CONFLICT(module_id, source_key) DO UPDATE SET material=excluded.material, year=excluded.year, region=excluded.region, paper_type=excluded.paper_type, ${UPDATED_AT}`
@@ -581,6 +659,12 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
   const blueprintStatements = blueprintSeedStatements(XINGCE_BLUEPRINTS)
   statements.push(...blueprintStatements)
 
+  // a3. 知识点种子 upsert + 孤儿清理（M3/T3-01a，ADR-0013）：排在蓝图之后（module 标量子
+  //     查询依赖分类体系行先存在，与蓝图段互不依赖）；数据源为 shared 的
+  //     XINGCE_KNOWLEDGE_TREE，与产物内容无关；知识点行 parent 解析依赖同段考点行先写
+  const knowledgeStatements = knowledgeSeedStatements(XINGCE_KNOWLEDGE_TREE)
+  statements.push(...knowledgeStatements)
+
   // b. 题组 upsert（moduleOrder → 卷序 → 组序）；qid → 所属组 source_key（题目链接依据）
   const groupOfQid = new Map<string, string>()
   let questionGroups = 0
@@ -652,12 +736,16 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
     }
   }
 
-  // d. import_runs 行（实际导入统计；images 为进 SQL 的图片段 path 去重计数，knowledgePoints 恒 0）
+  // d. import_runs 行（实际导入统计；images 为进 SQL 的图片段 path 去重计数；
+  //    knowledgePoints 为 knowledge_points 种子行数——考点+知识点合计，恒树常量节点数）
   const stats: DbStageStats = {
     questions,
     questionGroups,
     images: imagePaths.size,
-    knowledgePoints: 0,
+    knowledgePoints: XINGCE_KNOWLEDGE_TREE.reduce(
+      (sum, entry) => sum + entry.topics.reduce((topicSum, topic) => topicSum + 1 + topic.points.length, 0),
+      0,
+    ),
     papers: paperProducts.length,
     questionPapers,
     blueprints: XINGCE_BLUEPRINTS.length,
@@ -704,5 +792,29 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
   const blueprintsSqlPath = resolveWithin(productsRoot, 'blueprints.sql')
   fs.writeFileSync(blueprintsSqlPath, blueprintsSql, 'utf8')
 
-  return { sql, sqlPath, blueprintsSql, blueprintsSqlPath, skippedQids, stats, inputDigest, issues }
+  // 独立知识点种子 SQL（M3/T3-01a）：自包含可单独执行——分类体系定位行（knowledge_points
+  // 的 module_id 子查询依赖六模块行存在）+ 知识点种子段，语句文本与顺序与 import.sql 内
+  // 对应段逐字节一致；不含 version 与 import_runs 行，跨版本逐字节稳定（树常量演进才变化；
+  // 远端轻量执行，不必重导全量 import.sql——树校对定稿后的远端种子路径）
+  const knowledgeHeader =
+    '-- ncse 知识点种子 SQL（自包含：分类体系定位行 + knowledge_points 种子，幂等，可重复执行）'
+  const knowledgeSql =
+    [knowledgeHeader, ...[...taxonomyStatements, ...knowledgeStatements].map((statement) => `${statement};`)].join(
+      '\n',
+    ) + '\n'
+  const knowledgeSqlPath = resolveWithin(productsRoot, 'knowledge.sql')
+  fs.writeFileSync(knowledgeSqlPath, knowledgeSql, 'utf8')
+
+  return {
+    sql,
+    sqlPath,
+    blueprintsSql,
+    blueprintsSqlPath,
+    knowledgeSql,
+    knowledgeSqlPath,
+    skippedQids,
+    stats,
+    inputDigest,
+    issues,
+  }
 }

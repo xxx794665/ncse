@@ -15,6 +15,11 @@
  * blueprints.sql（语句与 import.sql 对应段逐字节一致，干净库单独重放幂等）、
  * blueprintSeedStatements 注入假目录的 validateBlueprint 失败路径，
  * stats 增 blueprints/blueprintModules 计数。
+ * M3/T3-01a 增知识点种子断言：knowledge_points 两级树幂等 upsert（对照
+ * XINGCE_KNOWLEDGE_TREE 精确一致）与孤儿清理（限定行测六模块、级联连带删打标行）、
+ * 独立自包含 knowledge.sql（与 import.sql 对应段逐字节一致，干净库单独重放幂等）、
+ * knowledgeSeedStatements 注入假树的 validateKnowledgeTree 失败路径，
+ * stats.knowledgePoints 计数。
  * 夹具全部为合成虚构题目；产物与 SQL 写入系统临时目录，测试后清理。
  */
 import fs from 'node:fs'
@@ -23,12 +28,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { runDbStage, blueprintSeedStatements, InvalidProductsError } from '../src/db-stage.js'
+import { runDbStage, blueprintSeedStatements, knowledgeSeedStatements, InvalidProductsError } from '../src/db-stage.js'
 import { main } from '../src/main.js'
 import { runImport, resolveWithin } from '../src/pipeline.js'
-import { XINGCE_BLUEPRINTS } from '@ncse/shared'
+import { XINGCE_BLUEPRINTS, XINGCE_KNOWLEDGE_TREE } from '@ncse/shared'
 import type { ExamBlueprint, RichContent } from '@ncse/shared'
 import type { ParsedGroup, ParsedPaper, ParsedQuestion } from '../src/types.js'
+
+/** 知识点种子行数（考点+知识点合计，与 shared 树常量同步；stats 断言用） */
+const KNOWLEDGE_SEED_ROWS = XINGCE_KNOWLEDGE_TREE.reduce(
+  (sum, entry) => sum + entry.topics.reduce((topicSum, topic) => topicSum + 1 + topic.points.length, 0),
+  0,
+)
 
 const fixturesDir = fileURLToPath(new URL('./fixtures', import.meta.url))
 const cleanInput = path.join(fixturesDir, 'clean-input')
@@ -266,12 +277,13 @@ describe('clean 产物：SQL 执行与数据断言', () => {
     expect(runs[0].input_digest).toBe(result.inputDigest)
     // images：clean 夹具实际进 SQL 的 image 段 path 去重 = 13（见下方图片统计用例的逐项清点）；
     // papers/questionPapers：clean 夹具 7 卷名各自唯一、无质量门跳过 → 7 卷 12 pair；
-    // blueprints/blueprintModules：T2-01b 种子恒为 XINGCE_BLUEPRINTS（2 卷型 × 六模块）
+    // blueprints/blueprintModules：T2-01b 种子恒为 XINGCE_BLUEPRINTS（2 卷型 × 六模块）；
+    // knowledgePoints：M3/T3-01a 种子恒为 XINGCE_KNOWLEDGE_TREE 节点数（考点+知识点合计）
     expect(JSON.parse(runs[0].stats)).toEqual({
       questions: 12,
       questionGroups: 3,
       images: 13,
-      knowledgePoints: 0,
+      knowledgePoints: KNOWLEDGE_SEED_ROWS,
       papers: 7,
       questionPapers: 12,
       blueprints: XINGCE_BLUEPRINTS.length,
@@ -281,7 +293,7 @@ describe('clean 产物：SQL 执行与数据断言', () => {
       questions: 12,
       questionGroups: 3,
       images: 13,
-      knowledgePoints: 0,
+      knowledgePoints: KNOWLEDGE_SEED_ROWS,
       papers: 7,
       questionPapers: 12,
       blueprints: XINGCE_BLUEPRINTS.length,
@@ -644,6 +656,145 @@ describe('蓝图种子（T2-01b，XINGCE_BLUEPRINTS 幂等入库）', () => {
   })
 })
 
+describe('知识点种子（M3/T3-01a，XINGCE_KNOWLEDGE_TREE 幂等入库）', () => {
+  /** 行测科目 id 的标量子查询（与 db-stage.ts 同文本，测试注入行定位用） */
+  const XINGCE_SUBJECT_ID =
+    "(SELECT id FROM subjects WHERE exam_type_id=(SELECT id FROM exam_types WHERE code='civil_service') AND code='xingce')"
+
+  /** 知识点行视图：模块 code + 节点 code/name + 父节点 code（考点 NULL）+ sort_order（序 = 模块序 → 考点先于其知识点 → 各自 sort_order） */
+  const knowledgeRows = (
+    db: DatabaseSync,
+  ): Array<{ module: string; code: string; name: string; parent: string | null; sort_order: number }> =>
+    rows(
+      db,
+      `SELECT m.code AS module, kp.code AS code, kp.name AS name, p.code AS parent, kp.sort_order AS sort_order
+       FROM knowledge_points kp
+       JOIN modules m ON m.id = kp.module_id
+       LEFT JOIN knowledge_points p ON p.id = kp.parent_id
+       ORDER BY m.sort_order, COALESCE(kp.parent_id, kp.id), (kp.parent_id IS NULL) DESC, kp.sort_order`,
+    )
+
+  /** 期望形态：XINGCE_KNOWLEDGE_TREE → 行视图（精确一致断言的对照面，序 = 常量树序：考点前、知识点后） */
+  const expectedKnowledgeRows = XINGCE_KNOWLEDGE_TREE.flatMap((entry) =>
+    entry.topics.flatMap((topic, topicIndex) => [
+      { module: entry.module, code: topic.code, name: topic.name, parent: null, sort_order: topicIndex + 1 },
+      ...topic.points.map((point, pointIndex) => ({
+        module: entry.module,
+        code: point.code,
+        name: point.name,
+        parent: topic.code,
+        sort_order: pointIndex + 1,
+      })),
+    ]),
+  )
+
+  it('种子入库：knowledge_points 137 行（36 考点 parent NULL + 101 知识点挂考点），列值与 XINGCE_KNOWLEDGE_TREE 精确一致', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    expect(knowledgeRows(db)).toEqual(expectedKnowledgeRows)
+    const parentNull = rows<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM knowledge_points WHERE parent_id IS NULL')
+    expect(parentNull[0].n).toBe(36)
+    expect(rows<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM knowledge_points')[0].n).toBe(KNOWLEDGE_SEED_ROWS)
+    expect(result.stats.knowledgePoints).toBe(KNOWLEDGE_SEED_ROWS)
+    // import_runs 行 stats JSON 带知识点计数
+    expect(result.sql).toContain(`"knowledgePoints":${KNOWLEDGE_SEED_ROWS}`)
+    db.close()
+  })
+
+  it('幂等重放：同一 SQL 再 exec → 全部节点 id/code/name/parent/sort_order 快照不变（ON CONFLICT 原地更新）', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    const snapshot = rows<{
+      id: number
+      code: string
+      name: string
+      parent_id: number | null
+      sort_order: number
+    }>(db, 'SELECT id, code, name, parent_id, sort_order FROM knowledge_points ORDER BY id')
+    db.exec(result.sql)
+    expect(
+      rows<{
+        id: number
+        code: string
+        name: string
+        parent_id: number | null
+        sort_order: number
+      }>(db, 'SELECT id, code, name, parent_id, sort_order FROM knowledge_points ORDER BY id'),
+    ).toEqual(snapshot)
+    db.close()
+  })
+
+  it('孤儿清理：行测种子外知识点重放后被删并级联连带删其打标行；他科目知识点不受影响', () => {
+    const db = createDb()
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    db.exec(result.sql)
+    // 预插行测孤儿知识点 + 一条挂它的打标行（question_knowledge，ADR-0013 后果：级联连带删）
+    db.exec(`
+      INSERT INTO knowledge_points (module_id, parent_id, code, name, sort_order)
+      VALUES ((SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='verbal'), NULL, 'orphan-topic', '孤儿考点', 99);
+      INSERT INTO question_knowledge (question_id, knowledge_point_id, tag_version, source)
+      VALUES ((SELECT id FROM questions WHERE qid=(SELECT MIN(qid) FROM questions)),
+              (SELECT id FROM knowledge_points WHERE code='orphan-topic'), 1, 'ai');
+      INSERT INTO subjects (exam_type_id, code, name)
+      VALUES ((SELECT id FROM exam_types WHERE code='civil_service'), 'shenlun', '申论');
+      INSERT INTO modules (subject_id, code, name, sort_order)
+      VALUES ((SELECT id FROM subjects WHERE code='shenlun'), 'shenlun_essay', '申论写作', 1);
+      INSERT INTO knowledge_points (module_id, parent_id, code, name, sort_order)
+      VALUES ((SELECT id FROM modules WHERE code='shenlun_essay'), NULL, 'shenlun-kp', '申论知识点', 1);
+    `)
+    db.exec(result.sql)
+    expect(rows<{ code: string }>(db, "SELECT code FROM knowledge_points WHERE code IN ('orphan-topic','shenlun-kp')")).toEqual([
+      { code: 'shenlun-kp' },
+    ])
+    expect(rows<{ n: number }>(db, "SELECT COUNT(*) AS n FROM question_knowledge WHERE knowledge_point_id=(SELECT id FROM knowledge_points WHERE code='orphan-topic')")).toEqual([{ n: 0 }])
+    expect(rows<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM knowledge_points')[0].n).toBe(KNOWLEDGE_SEED_ROWS + 1)
+    db.close()
+  })
+
+  it('独立自包含 knowledge.sql：语句与 import.sql 对应段逐字节一致；不含 version/import_runs；跨 version 稳定；干净库单独重放幂等', () => {
+    const result = runDbStage({ productsDir: cleanProducts, version: 1 })
+    const kLines = result.knowledgeSql.split('\n')
+    const sqlLines = result.sql.split('\n')
+    expect(kLines[0]).toMatch(/^-- ncse 知识点种子 SQL（自包含/)
+    expect(kLines[kLines.length - 1]).toBe('') // 以换行结尾
+    const body = kLines.slice(1, -1)
+    // 语句数 = 分类体系 8 条 + 种子 137 条 + 孤儿清理 1 条
+    expect(body).toHaveLength(8 + KNOWLEDGE_SEED_ROWS + 1)
+    // 分类体系段 = import.sql 头注释后的同序前缀（与 blueprints.sql 共用同段）
+    expect(body.slice(0, 8)).toEqual(sqlLines.slice(1, 9))
+    // 知识点段紧随 import.sql 蓝图段之后连续出现，逐字节一致
+    const knowledgeStart = sqlLines.findIndex((line) => line.startsWith('INSERT INTO knowledge_points '))
+    expect(knowledgeStart).toBeGreaterThan(0)
+    expect(body.slice(8)).toEqual(sqlLines.slice(knowledgeStart, knowledgeStart + KNOWLEDGE_SEED_ROWS + 1))
+    expect(result.knowledgeSql).toContain('INSERT INTO knowledge_points (module_id, parent_id, code, name, sort_order)')
+    expect(result.knowledgeSql).toContain('DELETE FROM knowledge_points ')
+    expect(result.knowledgeSql).not.toContain('import_runs')
+    expect(result.knowledgeSql).not.toContain('version=')
+    // 与 version 无关：另一 version 生成的 knowledge.sql 逐字节相同
+    expect(runDbStage({ productsDir: cleanProducts, version: 4 }).knowledgeSql).toBe(result.knowledgeSql)
+
+    // 干净库（仅迁移）单独执行 → 种子完整；再执行一遍 → 幂等（id 与行值不变）
+    const db = createDb()
+    db.exec(result.knowledgeSql)
+    expect(knowledgeRows(db)).toEqual(expectedKnowledgeRows)
+    const snapshot = rows<{ id: number; code: string }>(db, 'SELECT id, code FROM knowledge_points ORDER BY id')
+    db.exec(result.knowledgeSql)
+    expect(rows<{ id: number; code: string }>(db, 'SELECT id, code FROM knowledge_points ORDER BY id')).toEqual(snapshot)
+    expect(knowledgeRows(db)).toEqual(expectedKnowledgeRows)
+    db.close()
+  })
+
+  it('validateKnowledgeTree 失败路径：注入缺模块的假树 → 抛错（消息含缺失模块）；六模块全空树亦抛错', () => {
+    expect(() => knowledgeSeedStatements(XINGCE_KNOWLEDGE_TREE.slice(0, 5))).toThrow(/模块缺失/)
+    const emptyTree = (
+      ['political_theory', 'common_sense', 'verbal', 'quantitative', 'judgement', 'data_analysis'] as const
+    ).map((module) => ({ module, topics: [] }))
+    expect(() => knowledgeSeedStatements(emptyTree)).toThrow(/知识点树为空/)
+  })
+})
+
 describe('归属 pair 质量门（error 产物）', () => {
   it('qid 解析不到（门控题目）→ pair 跳过 + warning（消息含卷名与 qid），卷内序保留原始位置', () => {
     const result = runDbStage({ productsDir: errorProducts, version: 1 })
@@ -824,7 +975,7 @@ describe('图片统计（stats.images 做实：进 SQL 的 image 段 path 去重
       questions: 12,
       questionGroups: 3,
       images: 12,
-      knowledgePoints: 0,
+      knowledgePoints: KNOWLEDGE_SEED_ROWS,
       papers: 7,
       questionPapers: 12,
       blueprints: XINGCE_BLUEPRINTS.length,

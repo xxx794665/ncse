@@ -3,6 +3,7 @@ import type { AppEnv } from '../types'
 import { authRoute } from './auth'
 import { favoritesRoute } from './favorites'
 import { imgRoute } from './img'
+import { knowledgeRoute } from './knowledge'
 import { mockRoute } from './mock'
 import { papersRoute } from './papers'
 import { practiceRoute } from './practice'
@@ -28,6 +29,8 @@ import { wrongBookRoute } from './wrong-book'
  * - T2-01b（已落地）整卷模拟·模考会话：mockRoute → /api/mock/*（建会话/列表/详情/作答/计时/
  *   交卷判分/成绩单——时长锁定 D3、作答中不下发答案 D4、交卷统一判分与错题本联动 D8、
  *   计时累计 D6，全路由 requireAuth；模考后端数据面就绪）；
+ * - M3/T3-01a（已落地）知识点树：knowledgeRoute → /api/knowledge/*（GET /tree 全量
+ *   三级嵌套树，数据源 importer 种子（ADR-0013 两级树+版本化种子），全路由 requireAuth）；
  * - AI 代理（ADR-0005）：aiRoute → /api/ai/*（申论批改、AI 参考答案等 POST 转发）；
  * - 题库、做题记录等其余业务域：按任务进展追加。
  */
@@ -56,3 +59,6 @@ apiRoute.route('/papers', papersRoute)
 
 // 整卷模拟·模考会话域：全端点 requireAuth（子路由内部 use），拆片决策（D3/D4/D6/D7）见 mockRoute 文件头
 apiRoute.route('/mock', mockRoute)
+
+// 知识点域：全端点 requireAuth（子路由内部 use），树形态与种子入库见 ADR-0013
+apiRoute.route('/knowledge', knowledgeRoute)

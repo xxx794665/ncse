@@ -169,7 +169,7 @@ export interface DbStageStats {
   questionGroups: number
   /** 实际进 SQL 的图片数：题目（题干/选项/解析）与题组（材料）富片段中 image 段 path 的去重集合大小（T1-05 阶段 B 做实） */
   images: number
-  /** 知识点入库数（打标任务实现，当前恒 0） */
+  /** 知识点种子写入数（knowledge_points upsert 行数，考点+知识点合计，M3/T3-01a；恒 XINGCE_KNOWLEDGE_TREE 节点数） */
   knowledgePoints: number
   /** 试卷实体写入数（papers upsert 行数，T2-01a/ADR-0012） */
   papers: number
@@ -191,6 +191,10 @@ export interface DbStageResult {
   blueprintsSql: string
   /** 蓝图种子 SQL 写入路径（绝对路径；恒为产物目录下的 blueprints.sql） */
   blueprintsSqlPath: string
+  /** 独立知识点种子 SQL 全文（M3/T3-01a：自包含可单独执行，含分类体系定位行 + knowledge_points 种子段；与 version 无关，树常量演进才变化） */
+  knowledgeSql: string
+  /** 知识点种子 SQL 写入路径（绝对路径；恒为产物目录下的 knowledge.sql） */
+  knowledgeSqlPath: string
   /** 数据质量门跳过的题目 qid（--force 时为空数组） */
   skippedQids: string[]
   /** 实际导入统计（import_runs 行的 stats 同值） */
