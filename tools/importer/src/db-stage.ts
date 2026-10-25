@@ -557,6 +557,21 @@ export function questionModuleIndex(productsRoot: string): Map<string, ModuleCod
   return index
 }
 
+/**
+ * 数据质量门跳过集（M3/T3-01b 打标吸收与批次生成复用）：manifest issues 中
+ * severity 'error' 且命中 GATING_ISSUE_CODES 的 qid 集合——这些题在产物中存在但
+ * 不进 SQL（DB 无行），打标侧必须跳过（pair 的 question_id 子查询会解析为 NULL）。
+ */
+export function qualityGatedQids(productsRoot: string): Set<string> {
+  const manifest = readManifest(productsRoot)
+  const gated = new Set<string>()
+  for (const entry of manifest.issues) {
+    if (entry.severity !== 'error' || !GATING_ISSUE_CODES.has(entry.code)) continue
+    if (entry.qid !== null) gated.add(entry.qid)
+  }
+  return gated
+}
+
 /** b. 题组 upsert（唯一键 module_id + source_key；year/region/paper_type 可空） */
 function groupUpsert(code: ModuleCode, sourceKey: string, group: DbGroup): string {
   return `INSERT INTO question_groups (module_id, source_key, material, year, region, paper_type) VALUES (${moduleIdExpr(code)}, ${sqlString(sourceKey)}, ${sqlJson(group.material)}, ${sqlNullableInteger(group.year)}, ${sqlNullableString(group.region)}, ${sqlNullableString(group.paperType)}) ON CONFLICT(module_id, source_key) DO UPDATE SET material=excluded.material, year=excluded.year, region=excluded.region, paper_type=excluded.paper_type, ${UPDATED_AT}`
@@ -633,17 +648,8 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
   const productsRoot = path.resolve(options.productsDir)
   const manifest = readManifest(productsRoot)
 
-  // ---- 数据质量门（--force 覆盖：全量导入，跳过名单为空） ----
-  const skippedQids: string[] = []
-  if (options.force !== true) {
-    const seen = new Set<string>()
-    for (const entry of manifest.issues) {
-      if (entry.severity !== 'error' || !GATING_ISSUE_CODES.has(entry.code)) continue
-      if (entry.qid === null || seen.has(entry.qid)) continue
-      seen.add(entry.qid)
-      skippedQids.push(entry.qid)
-    }
-  }
+  // ---- 数据质量门（--force 覆盖：全量导入，跳过名单为空；跳过集语义见 qualityGatedQids） ----
+  const skippedQids = options.force === true ? [] : [...qualityGatedQids(productsRoot)]
   const skipped = new Set(skippedQids)
 
   // ---- 读模块产物（moduleOrder 序；无 JSON 文件的模块跳过），同时收集原文做内容指纹 ----

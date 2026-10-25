@@ -1326,6 +1326,46 @@ describe('打标吸收（M3/T3-01b，tag-in/ staging → 幂等 tag.sql）', () 
     expect(await main(['tag', '--products', cleanProducts, '--version', '9'])).toBe(0)
   })
 
+  it('质量门跳过题：warning 级跳过（DB 无行防 NOT NULL 失败），同批合法题照常吸收', () => {
+    // error 产物含门控 issue（severity error + 门控码）——取其 qid 造 staging（error 产物侧）
+    const errorManifestPath = path.join(errorProducts, 'import-manifest.json')
+    const errorManifest = JSON.parse(fs.readFileSync(errorManifestPath, 'utf8')) as {
+      issues: Array<{ severity: string; code: string; qid: string | null }>
+    }
+    const gatingCodes = new Set(['answer_not_in_options', 'missing_answer', 'no_options', 'duplicate_option'])
+    const gatedQid = errorManifest.issues.find(
+      (entry) => entry.severity === 'error' && gatingCodes.has(entry.code) && entry.qid !== null,
+    )?.qid
+    expect(gatedQid).toBeDefined()
+    // error 产物侧的合法题与模块（未门控的首见题）
+    const errorModuleByQid = questionModuleIndex(errorProducts)
+    const errorGated = new Set(
+      errorManifest.issues
+        .filter((entry) => entry.severity === 'error' && gatingCodes.has(entry.code) && entry.qid !== null)
+        .map((entry) => entry.qid as string),
+    )
+    const validEntry = [...errorModuleByQid.entries()].find(([qid]) => !errorGated.has(qid))
+    expect(validEntry).toBeDefined()
+    const [validQid, validModule] = validEntry as [string, string]
+    const [validCode] = tagPointCodesOf(validModule, 1)
+
+    try {
+      const stagingDir = path.join(errorProducts, 'tag-in')
+      fs.mkdirSync(stagingDir, { recursive: true })
+      fs.writeFileSync(path.join(stagingDir, `${gatedQid}.txt`), `${validCode}\n`, 'utf8')
+      fs.writeFileSync(path.join(stagingDir, `${validQid}.txt`), `${validCode}\n`, 'utf8')
+
+      const result = runTagStage({ productsDir: errorProducts, version: 9 })
+      expect(result.stats).toEqual({ taggedQuestions: 1, tagPairs: 1, skippedQuestions: 1 })
+      expect(result.issues).toHaveLength(1)
+      expect(result.issues[0]).toMatchObject({ severity: 'warning', code: 'tag_gated_qid', qid: gatedQid })
+      // 门控题不产生任何 SQL 语句（DB 无行，防 question_id 子查询 NULL 违反 NOT NULL）
+      expect(result.sql).not.toContain(`qid=${JSON.stringify(gatedQid)}`.slice(1, -1))
+    } finally {
+      fs.rmSync(path.join(errorProducts, 'tag-in'), { recursive: true, force: true })
+    }
+  })
+
   it('CLI 用法错误：缺 --version / version 非正整数 / products 不存在 → 退出 2', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await main(['tag', '--products', cleanProducts])).toBe(2)

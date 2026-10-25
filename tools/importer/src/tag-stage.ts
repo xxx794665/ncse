@@ -22,7 +22,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { XINGCE_KNOWLEDGE_TREE, validateKnowledgeTree } from '@ncse/shared'
-import { UPDATED_AT, issue, moduleIdExpr, questionModuleIndex, sqlString } from './db-stage.js'
+import { UPDATED_AT, issue, moduleIdExpr, qualityGatedQids, questionModuleIndex, sqlString } from './db-stage.js'
 import { resolveWithin } from './pipeline.js'
 import type { ImportIssue, TagStageOptions, TagStageResult, TagStageStats } from './types.js'
 
@@ -53,6 +53,9 @@ export function runTagStage(options: TagStageOptions): TagStageResult {
 
   // qid → 模块（产物读取在 db-stage 侧做结构校验，坏结构抛 InvalidProductsError 由 CLI 转 1）
   const moduleByQid = questionModuleIndex(productsRoot)
+  // 数据质量门跳过集：这些题在产物中存在但不进 SQL（DB 无行，pair 子查询会解析为
+  // NULL 违反 NOT NULL）——warning 级跳过（非打分子代理过错，批次生成侧亦应过滤）
+  const gatedQids = qualityGatedQids(productsRoot)
 
   // staging 清单（tag-in/*.txt；目录缺失 = 空 staging），qid 字典序确定性处理
   const stagingDir = resolveWithin(productsRoot, 'tag-in')
@@ -85,6 +88,14 @@ export function runTagStage(options: TagStageOptions): TagStageResult {
       continue
     }
     digestParts.push(`${file}\n${text}`)
+
+    if (gatedQids.has(qid)) {
+      issues.push(
+        issue('warning', 'tag_gated_qid', `tag-in/${file}`, qid, `题目 qid=${qid} 被数据质量门跳过未入库，打标记跳`),
+      )
+      stats.skippedQuestions++
+      continue
+    }
 
     const module = moduleByQid.get(qid)
     if (module === undefined) {
