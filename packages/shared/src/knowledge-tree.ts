@@ -4,9 +4,9 @@
  * 单一权威常量：importer 种子 SQL（T3-01a）与打标映射键（T3-01b/c）均以此为准。
  * 树为自产知识资产入 Git（不属 ADR-0004 题库爬取数据）；code 定稿后不再改义。
  *
- * 状态：草稿待用户校对（2026-10-25 生成，域建模子代理基于 27,362 真题抽样与
- * 关键词频次核实；校对稿 .import-out/knowledge-tree-draft.md 不入库）。
- * 校对只改 name/增删节点，code 保持稳定；定稿后远端执行种子入库。
+ * 状态：已定稿（2026-10-25 生成——域建模子代理基于 27,362 真题抽样与关键词频次核实，
+ * 同日用户校对通过；校对稿 .import-out/knowledge-tree-draft.md 不入库）。
+ * 后续演进（改名/增删节点）经正常提交评审 + 种子幂等重放生效；code 为稳定锚点不再改义。
  * 本文件另承载树目录校验（validateKnowledgeTree，种子生成 fail-fast 前置）与
  * 树查询 DTO（GET /api/knowledge/tree 响应，前端 T3-01b 直接复用）。
  */
