@@ -5,7 +5,8 @@
  * 判分与错题本 DTO（T1-08c）、错题本/难点本列表与收藏 DTO 及建会话 wrong_redo 模式（T1-10a）、
  * 需加强清单 DTO 与建会话 reinforce 模式（M3/T3-01e）、
  * 统计汇总 DTO（T1-11a）、整卷模考推导与 DTO（T2-01b，见 mock.ts）、
- * 知识点树常量/校验与树查询 DTO（M3/T3-01a，见 knowledge-tree.ts，ADR-0013）；
+ * 知识点树常量/校验与树查询 DTO（M3/T3-01a，见 knowledge-tree.ts，ADR-0013）、
+ * 掌握度推导（阈值/deriveMastery/needsReinforce）与知识点掌握度查询 DTO（M3/T3-01d，见 mastery.ts）；
  * 后续将承载：其余业务 DTO 等。
  */
 
@@ -486,4 +487,5 @@ export interface StatsSummaryResponse {
 
 export * from './blueprint.js'
 export * from './knowledge-tree.js'
+export * from './mastery.js'
 export * from './mock.js'

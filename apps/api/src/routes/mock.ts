@@ -44,6 +44,7 @@ import {
   subjects,
 } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
+import { applyMasteryIncrements, type MasteryAnswerIncrement } from './mastery-machine'
 import { projectRichContent } from './rich-content-project'
 import { ingestReinforce } from './reinforce-machine'
 import { applyWrongBookStateMachine } from './wrong-book-machine'
@@ -63,7 +64,9 @@ import type { AppEnv } from '../types'
  *   isTimeout（D5 超时按蓝图每题时限严格大于判，与练习判分同口径；蓝图行缺失/空明细防御性
  *   全不判超时）、答错题联动错题本状态机（D8 复用共享 wrong-book-machine.ts；答对/未答不联动
  *   ——模考答对非重做场景）、答错/超时题汇入需加强队列（M3 D5 同口径；模考仅汇入不做出队，
- *   保守口径见 submit 端点内注释）、会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
+ *   保守口径见 submit 端点内注释）、已判分答案批量汇入掌握度（M3/T3-01d，复用共享
+ *   mastery-machine.ts，按知识点聚合后每点仅 1 条 upsert；与专项作答同权重，D4）、
+ *   会话翻 submitted（交卷即定卷，重复交卷拒绝）；模考不写
  *   practice_records（D9，mock_answers 独立承载）；无请求体入参，响应即成绩单（与 report 同形状）；
  * - GET /sessions/:id/report：成绩单聚合（summary/modules/questions 全部从库重算，交卷后可随时
  *   回看；逐题项不含正确答案与解析——展示解析走既有题目详情或后续需求）；
@@ -858,6 +861,8 @@ mockRoute.post('/sessions/:id/submit', async (c) => {
     .from(mockAnswers)
     .where(eq(mockAnswers.sessionId, session.id))
   const gradedAt = new Date().toISOString()
+  // 掌握度增量收集（M3/T3-01d）：判分循环内逐题收集，循环完成后一次性传入（见循环后调用处）
+  const masteryIncrements: MasteryAnswerIncrement[] = []
   for (const row of answerRows) {
     if (row.answer === null) {
       continue
@@ -873,6 +878,7 @@ mockRoute.post('/sessions/:id/submit', async (c) => {
       .update(mockAnswers)
       .set({ isCorrect, isTimeout, updatedAt: gradedAt })
       .where(and(eq(mockAnswers.sessionId, session.id), eq(mockAnswers.questionId, row.questionId)))
+    masteryIncrements.push({ questionId: row.questionId, isCorrect, durationMs: row.durationMs })
 
     // 错题本联动（D8）：仅答错题进状态机（复用共享 wrong-book-machine.ts——答错复活在册/
     // 新错入册，与专项刷题同一函数同一行为）。判分 true 的题不动错题本：D8「与专项刷题同状态机」
@@ -890,6 +896,11 @@ mockRoute.post('/sessions/:id/submit', async (c) => {
       await ingestReinforce(db, authUser.id, row.questionId, isCorrect ? 'timeout' : 'wrong')
     }
   }
+
+  // 掌握度批量汇入（M3/T3-01d，共享实现见 mastery-machine.ts）：判分循环完成后全部已判分答案
+  // 一次性传入——机器内部按知识点聚合，每知识点仅 1 条 upsert（135 题整卷高效，不逐题写库）；
+  // 未作答题不在 masteryIncrements（无 isCorrect 不计）；模考作答计入掌握度、与专项同权重（D4）。
+  await applyMasteryIncrements(db, authUser.id, masteryIncrements)
 
   // 会话翻 submitted（交卷即定卷；submittedAt 落值；updatedAt 显式给值——不依赖 $onUpdate）
   const submittedAt = new Date().toISOString()

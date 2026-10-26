@@ -1,7 +1,15 @@
 import { Hono } from 'hono'
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm'
-import { STATS_TREND_DAYS } from '@ncse/shared'
+import {
+  DEFAULT_BLUEPRINT,
+  deriveMastery,
+  deriveQuestionTimeLimit,
+  needsReinforce,
+  STATS_TREND_DAYS,
+} from '@ncse/shared'
 import type {
+  KnowledgeMasteryModule,
+  KnowledgeMasteryPoint,
   PracticeDailyStat,
   PracticeModuleStat,
   PracticeOverallStats,
@@ -9,7 +17,7 @@ import type {
   XingceModuleCode,
 } from '@ncse/shared'
 import { createDb } from '../db'
-import { modules, practiceRecords, questions } from '../db/schema'
+import { knowledgePoints, masteryStats, modules, practiceRecords, questions } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
 import type { AppEnv } from '../types'
 
@@ -18,6 +26,13 @@ import type { AppEnv } from '../types'
  * - GET /summary：当前用户练习统计汇总——overall 全历史聚合 + modules 分模块聚合
  *   （仅含有作答记录的模块，moduleCode 升序）+ daily 近 STATS_TREND_DAYS 天北京时间日趋势
  *   （零填空、日期升序、今日在末）。窗口外的历史记录仍计入 overall 与 modules，只是 daily 不反映。
+ * - GET /knowledge（M3/T3-01d）：当前用户分模块知识点掌握度——mastery_stats 知识点行
+ *   innerJoin knowledge_points/modules 取编码名称与定位（仅含有行的知识点，空表/无行
+ *   返回 []，打标前空态可用）；模块序 = modules.sort_order（id 并列稳定）、模块内知识点序
+ *   = sort_order + id；mastery/needsReinforce 服务端经 shared mastery.ts 派生后随原始计数
+ *   一并下发（推导口径两端同锚，勿在此另写公式）；timeLimitSec 按默认标准卷蓝图推导，
+ *   卷外模块为 null（该模块各点用时得分按 0 处理，见 shared deriveMastery 防御口径）；
+ *   模块级掌握度不落行不现算下发（D4 决策：本端点只出知识点颗粒）。
  * 全端点 requireAuth；无业务错误分支（401 由组合根收敛为 unauthorized 信封），成功 200 直接返回 DTO。
  */
 
@@ -45,7 +60,7 @@ const beijingDay: SQL<string> = sql`strftime('%Y-%m-%d', ${practiceRecords.creat
 
 export const statsRoute = new Hono<AppEnv>()
 
-// 本域无公开端点：summary 一律经 requireAuth（401 由组合根收敛为 unauthorized 信封）
+// 本域无公开端点：summary 与 knowledge 一律经 requireAuth（401 由组合根收敛为 unauthorized 信封）
 statsRoute.use(requireAuth)
 
 statsRoute.get('/summary', async (c) => {
@@ -131,5 +146,74 @@ statsRoute.get('/summary', async (c) => {
   })
 
   const body: StatsSummaryResponse = { overall, modules: moduleStats, daily }
+  return c.json(body, 200)
+})
+
+statsRoute.get('/knowledge', async (c) => {
+  const authUser = c.get('authUser')
+  const db = createDb(c.env)
+
+  // 本人维度（mastery_stats.userId 隔离）：知识点行 innerJoin knowledge_points/modules——
+  // 悬空 target_id（知识点行被内容重删的罕见态防御，与 summary 模块聚合同一理由）整条跳过，
+  // 故 code/name 恒非空、模块定位恒命中。SQL 序即输出序：模块 sort_order（id 并列稳定——
+  // 列表端点惯例）、模块内知识点 sort_order + id。
+  const rows = await db
+    .select({
+      moduleId: modules.id,
+      moduleCode: modules.code,
+      pointId: knowledgePoints.id,
+      pointCode: knowledgePoints.code,
+      pointName: knowledgePoints.name,
+      totalCount: masteryStats.totalCount,
+      correctCount: masteryStats.correctCount,
+      accuracy: masteryStats.accuracy,
+      avgDurationMs: masteryStats.avgDurationMs,
+    })
+    .from(masteryStats)
+    .innerJoin(knowledgePoints, eq(knowledgePoints.id, masteryStats.targetId))
+    .innerJoin(modules, eq(modules.id, knowledgePoints.moduleId))
+    .where(
+      and(eq(masteryStats.userId, authUser.id), eq(masteryStats.targetType, 'knowledge_point')),
+    )
+    .orderBy(
+      asc(modules.sortOrder),
+      asc(modules.id),
+      asc(knowledgePoints.sortOrder),
+      asc(knowledgePoints.id),
+    )
+
+  // 按 SQL 序两遍装配（模块首次出现即建组，组内逐点追加）：
+  // timeLimitSec 按默认标准卷蓝图推导（推导口径以 shared 为唯一权威）；卷外模块为 null，
+  // 该模块各点 mastery 用时得分按 0 处理（传 0 → deriveMastery 防御分支同口径，见 shared 注释）
+  const moduleById = new Map<number, KnowledgeMasteryModule>()
+  const body: KnowledgeMasteryModule[] = []
+  for (const row of rows) {
+    // modules.code 库层为无域类型的 TEXT（M1 内容域即行测模块编码），读取处按域值断言
+    //（与 summary 模块聚合的 moduleCode 读取同一约定）
+    const moduleCode = row.moduleCode as XingceModuleCode
+    let entry = moduleById.get(row.moduleId)
+    if (entry === undefined) {
+      entry = {
+        module: moduleCode,
+        timeLimitSec: deriveQuestionTimeLimit(DEFAULT_BLUEPRINT, moduleCode) ?? null,
+        points: [],
+      }
+      moduleById.set(row.moduleId, entry)
+      body.push(entry)
+    }
+    const mastery = deriveMastery(row.accuracy, row.avgDurationMs, entry.timeLimitSec ?? 0)
+    const point: KnowledgeMasteryPoint = {
+      knowledgePointId: row.pointId,
+      code: row.pointCode,
+      name: row.pointName,
+      totalCount: row.totalCount,
+      correctCount: row.correctCount,
+      accuracy: row.accuracy,
+      avgDurationMs: row.avgDurationMs,
+      mastery,
+      needsReinforce: needsReinforce(mastery),
+    }
+    entry.points.push(point)
+  }
   return c.json(body, 200)
 })

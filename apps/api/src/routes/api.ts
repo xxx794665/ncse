@@ -24,7 +24,8 @@ import { wrongBookRoute } from './wrong-book'
  * - T1-10a（已落地）收藏：favoritesRoute → /api/favorites/*（收藏列表/收藏/取消，
  *   幂等切换，全路由 requireAuth）；
  * - T1-11a（已落地）基础统计：statsRoute → /api/stats/*（GET /summary 练习统计汇总：
- *   overall/modules 全历史聚合 + daily 近 30 天北京日趋势，全路由 requireAuth）；
+ *   overall/modules 全历史聚合 + daily 近 30 天北京日趋势；GET /knowledge 分模块知识点
+ *   掌握度（M3/T3-01d，mastery/needsReinforce 经 shared 派生下发），全路由 requireAuth）；
  * - T2-01b（已落地）试卷目录：papersRoute → /api/papers/*（GET / 全量卷目录，
  *   完整度分档 D2，全路由 requireAuth）；
  * - T2-01b（已落地）整卷模拟·模考会话：mockRoute → /api/mock/*（建会话/列表/详情/作答/计时/

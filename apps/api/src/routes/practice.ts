@@ -18,6 +18,7 @@ import type {
 import { createDb, type DbClient } from '../db'
 import { modules, practiceRecords, practiceSessions, questions, reinforceQueue, wrongBook } from '../db/schema'
 import { requireAuth } from '../auth/middleware'
+import { applyMasteryIncrements } from './mastery-machine'
 import { projectRichContent } from './rich-content-project'
 import { ingestReinforce, resolveReinforce } from './reinforce-machine'
 import { applyWrongBookStateMachine } from './wrong-book-machine'
@@ -35,7 +36,8 @@ import type { AppEnv } from '../types'
  * - GET /sessions/:id：会话详情（题目富片段不含答案/解析——服务端判分共识；图片段投影 /api/img URL）；
  * - GET /sessions：当前用户活动会话列表（只列 in_progress，createdAt 倒序）；
  * - POST /sessions/:id/answers：判分（practice_records append-only 落库 + 错题本状态机 ADR-0010
- *   + 需加强队列联动 M3 D5 + 会话 finished 判定 ADR-0009），correctAnswer/analysis 仅判分后回发。
+ *   + 需加强队列联动 M3 D5 + 掌握度增量联动 M3/T3-01d + 会话 finished 判定 ADR-0009），
+ *   correctAnswer/analysis 仅判分后回发。
  * 全端点 requireAuth；业务错误一律抛 HTTPException（中文 message），
  * 由组合根 onError 统一收敛为 ApiErrorBody（沿用既有错误码，不新增）。
  */
@@ -606,6 +608,11 @@ practiceRoute.post('/sessions/:id/answers', async (c) => {
   } else {
     await resolveReinforce(db, authUser.id, questionId)
   }
+
+  // 掌握度增量更新（M3/T3-01d，共享实现见 mastery-machine.ts）：练习判分逐题单事件（n=1）
+  // 按打标 pair 汇入 mastery_stats 知识点行——任意模式（module/wrong_redo/reinforce）的判分
+  // 均汇入（错题重做/强化也是作答，同权重）；未打标题静默跳过（机器内部处理，不报错）
+  await applyMasteryIncrements(db, authUser.id, [{ questionId, isCorrect, durationMs }])
 
   // 会话 finished 判定（ADR-0009）：全部作答后翻状态（updatedAt 显式给值，同上不依赖 $onUpdate）
   let sessionStatus: PracticeSessionStatus = session.status
