@@ -1,15 +1,23 @@
 /**
- * 错题·收藏·复习页（T1-10b，/review，requiresAuth）
- * - 三视图 Tab（本地 state 切换；role=tablist/tab/tabpanel + 方向键漫游 tabindex 的 ARIA tabs 形态）：
- *   错题本 active / 难点本 hard / 收藏 favorites
+ * 错题·需加强·收藏复习页（T1-10b / M3 T3-01f，/review，requiresAuth）
+ * - 四视图 Tab（本地 state 切换；role=tablist/tab/tabpanel + 方向键漫游 tabindex 的 ARIA tabs 形态）：
+ *   错题本 active / 难点本 hard / 需加强 reinforce（M3/T3-01f）/ 收藏 favorites
  * - 错题本/难点本视图：useQuery 按 status 取列表（staleTime 30s；骨架/错误重试/空态三态照 T1-08f 模式）；
  *   卡片 = 题干预览（服务端截断 80 字或「（图片题）」，CSS 两行截断兜底）+ 模块 Tag
  *   + 答错/重做计数 + 中文 updatedAt + 收藏星标
- * - 重做入口：视图头部主按钮「重做练习」（列表空禁用）→ Modal 选题数（5/10/20/30 默认 10，提交中
- *   禁关闭，T1-08f 约定）→ wrong_redo 分支建会话（T1-10a 判别联合）→ 失效会话列表并跳
+ * - 需加强视图（M3/T3-01f）：GET /api/reinforce?status=pending（D8 定稿：仅 pending 列表，
+ *   全自动队列无任何用户处置动作——汇入由判分联动、出队仅强化练习答对不超时，与错题本的
+ *   用户处置状态机本质分工）；卡片 = 模块 Tag + reason 标记（wrong 答错 danger / timeout 超时
+ *   warning）+ 题干预览（CSS 两行截断兜底照错题本先例）+ 中文 updatedAt；无移除/收藏按钮
+ * - 强化练习入口：需加强视图头部主按钮「强化练习」（列表空/加载中禁用，照重做按钮先例）→ Modal
+ *   题数四选一（5/10/20/30 默认 10，radiogroup，提交中禁关闭——Esc/遮罩/取消全拦截，T1-08f 约定）
+ *   → reinforce 分支建会话（T3-01e 判别联合）→ 失效会话列表并跳 /practice/sessions/:id；
+ *   400（需加强清单暂无待强化题目）在弹窗内 danger 条展示 ApiError.message
+ * - 重做入口：错题/难点视图头部主按钮「重做练习」（列表空禁用）→ Modal 选题数（5/10/20/30 默认 10，
+ *   提交中禁关闭，T1-08f 约定）→ wrong_redo 分支建会话（T1-10a 判别联合）→ 失效会话列表并跳
  *   /practice/sessions/:id；400（在册 0 条等）在弹窗内 danger 条展示 ApiError.message
  * - 卡片处置（ADR-0010）：active 卡「归难点本/移除」、hard 卡「移除」，确认 Modal 说明语义
- *   （remove=eliminated 软移除保计数、日后再答错自动回错题本；to_hard=归难点本长期跟进）；
+ *   （remove=eliminated 软移除保计数、日后再答错自动复活为 active；to_hard=归难点本长期跟进）；
  *   处置中禁关；成功按前缀失效 wrongBook 双状态列表 + success-soft 轻提示，失败弹窗内提示可重试
  * - 收藏视图：卡片 = 预览 + 模块 Tag + 收藏时间 + 「取消收藏」（幂等直执不确认；成功失效
  *   favorites 查询 + 轻提示）；错题/难点卡的星标由 favorites 查询派生 Set 显态，点按切换
@@ -21,10 +29,20 @@ import { useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { CalendarClock, CircleX, FolderInput, RotateCcw, Star, StarOff, Trash } from 'lucide-react'
+import {
+  CalendarClock,
+  CircleX,
+  FolderInput,
+  RotateCcw,
+  Star,
+  StarOff,
+  Trash,
+  Zap,
+} from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type {
   FavoriteSummary,
+  ReinforceEntrySummary,
   WrongBookDisposeAction,
   WrongBookEntrySummary,
 } from '@ncse/shared'
@@ -34,6 +52,7 @@ import {
   createPracticeSessionApi,
   disposeWrongBookApi,
   fetchFavoritesApi,
+  fetchReinforceApi,
   fetchWrongBookApi,
   removeFavoriteApi,
 } from '../../api'
@@ -43,8 +62,8 @@ import { practiceQueryKeys } from '../practice/practice-query-keys'
 import { reviewQueryKeys } from './review-query-keys'
 import './review.css'
 
-/** 三视图标识：active 错题本 / hard 难点本 / favorites 收藏 */
-type ReviewView = 'active' | 'hard' | 'favorites'
+/** 四视图标识：active 错题本 / hard 难点本 / reinforce 需加强 / favorites 收藏 */
+type ReviewView = 'active' | 'hard' | 'reinforce' | 'favorites'
 
 /** 错题本/难点本标识（列表查询 status，与 wrong_redo source 同取值） */
 type BookStatus = 'active' | 'hard'
@@ -61,17 +80,18 @@ interface Feedback {
   text: string
 }
 
-/** 重做弹窗题数选项（与 shared CreatePracticeSessionRequest.count 契约一致，勿单方扩值） */
+/** 重做/强化弹窗题数选项（与 shared CreatePracticeSessionRequest.count 契约一致，勿单方扩值） */
 const COUNT_OPTIONS = [5, 10, 20, 30] as const
 /** 默认题数（§1：表单默认值给足） */
 const DEFAULT_COUNT = 10
 /** 列表 staleTime：30s（条目仅经本人作答/处置/收藏变更；各 mutation 成功均 invalidate 兜底） */
 const LIST_STALE_TIME = 30_000
 
-/** Tab 定义（数组顺序即展示顺序，方向键漫游同序循环） */
+/** Tab 定义（数组顺序即展示顺序，方向键漫游同序循环）：错题家族（错题本/难点本/需加强）在前，收藏殿后 */
 const REVIEW_TABS: readonly { view: ReviewView; label: string }[] = [
   { view: 'active', label: '错题本' },
   { view: 'hard', label: '难点本' },
+  { view: 'reinforce', label: '需加强' },
   { view: 'favorites', label: '收藏' },
 ]
 
@@ -203,6 +223,35 @@ function WrongBookCard({
   )
 }
 
+/**
+ * 需加强条目卡（M3/T3-01f）：模块 Tag + reason 标记（wrong 答错 danger / timeout 超时 warning，
+ * §2.2 语义色成对）+ 题干预览（两行截断兜底照错题本先例）+ 最近汇入时间。
+ * 全自动队列无任何用户处置动作（D8 定稿）：无移除/收藏按钮
+ */
+function ReinforceCard({ entry }: { entry: ReinforceEntrySummary }) {
+  return (
+    <Card className="review-card">
+      <div className="review-card__head">
+        <span className="review-card__tags">
+          <Tag tone="primary">{moduleDisplayName(entry.moduleCode)}</Tag>
+          {entry.reason === 'wrong' ? (
+            <Tag tone="danger">答错</Tag>
+          ) : (
+            <Tag tone="warning">超时</Tag>
+          )}
+        </span>
+      </div>
+      <p className="review-card__stem">{entry.stemPreview}</p>
+      <div className="review-card__foot">
+        <span className="review-card__time">
+          <CalendarClock aria-hidden="true" />
+          {formatDateTime(entry.updatedAt)}
+        </span>
+      </div>
+    </Card>
+  )
+}
+
 interface FavoriteCardProps {
   entry: FavoriteSummary
   /** 本卡取消收藏请求进行中（按钮 loading） */
@@ -250,6 +299,9 @@ export function ReviewPage() {
   // 重做弹窗：source 开弹窗时钉住（弹窗虽遮挡视图切换，显式持有更稳）；题数每次开重置默认 10
   const [redoSource, setRedoSource] = useState<BookStatus | null>(null)
   const [redoCount, setRedoCount] = useState<number>(DEFAULT_COUNT)
+  // 强化练习弹窗（M3/T3-01f）：开关 state 与题数（每次开重置默认 10）
+  const [reinforceOpen, setReinforceOpen] = useState(false)
+  const [reinforceCount, setReinforceCount] = useState<number>(DEFAULT_COUNT)
   // 处置确认弹窗目标
   const [disposal, setDisposal] = useState<DisposalTarget | null>(null)
 
@@ -259,7 +311,15 @@ export function ReviewPage() {
     queryKey: reviewQueryKeys.wrongBook(bookStatus),
     queryFn: () => fetchWrongBookApi(bookStatus),
     staleTime: LIST_STALE_TIME,
-    enabled: view !== 'favorites',
+    enabled: view === 'active' || view === 'hard',
+  })
+
+  // 需加强清单（M3/T3-01f）：仅 pending（D8 定稿，resolved 后端支持但本期不做 UI）；仅该视图激活时启用
+  const reinforceQuery = useQuery({
+    queryKey: reviewQueryKeys.reinforce('pending'),
+    queryFn: () => fetchReinforceApi('pending'),
+    staleTime: LIST_STALE_TIME,
+    enabled: view === 'reinforce',
   })
 
   // 收藏列表：收藏视图数据源 + 错题/难点卡星标显态来源（本页恒启用）
@@ -275,6 +335,16 @@ export function ReviewPage() {
       // 作答页返回时列表不过期：建会话成功即失效会话列表，再跳作答页（T1-08f 同策略）
       void queryClient.invalidateQueries({ queryKey: practiceQueryKeys.sessions })
       setRedoSource(null)
+      navigate(`/practice/sessions/${String(detail.id)}`)
+    },
+  })
+
+  // 强化练习建会话（M3/T3-01f）：reinforce 分支（判别联合无 moduleCode）；成功后失效会话列表并跳作答页
+  const reinforceMutation = useMutation({
+    mutationFn: createPracticeSessionApi,
+    onSuccess: (detail) => {
+      void queryClient.invalidateQueries({ queryKey: practiceQueryKeys.sessions })
+      setReinforceOpen(false)
       navigate(`/practice/sessions/${String(detail.id)}`)
     },
   })
@@ -357,6 +427,22 @@ export function ReviewPage() {
     redoMutation.mutate({ mode: 'wrong_redo', source: redoSource, count: redoCount })
   }
 
+  const openReinforceModal = () => {
+    setReinforceCount(DEFAULT_COUNT)
+    reinforceMutation.reset()
+    setReinforceOpen(true)
+  }
+  const closeReinforceModal = () => {
+    // 提交中不允许关闭（Esc/遮罩/取消同走本函数，同重做弹窗约定）
+    if (reinforceMutation.isPending) return
+    setReinforceOpen(false)
+    reinforceMutation.reset()
+  }
+  const submitReinforce = () => {
+    if (reinforceMutation.isPending) return
+    reinforceMutation.mutate({ mode: 'reinforce', count: reinforceCount })
+  }
+
   const openDisposal = (entry: WrongBookEntrySummary, action: WrongBookDisposeAction) => {
     disposeMutation.reset()
     setDisposal({ entry, action })
@@ -383,18 +469,21 @@ export function ReviewPage() {
 
   const entries = wrongBookQuery.data ?? []
   const favorites = favoritesQuery.data ?? []
+  const reinforceEntries = reinforceQuery.data ?? []
   // 星标显态集合：收藏列表未就位（加载中/失败）为 null，卡片不渲染星标（不显假未收藏态）
   const favoriteIds =
     favoritesQuery.isSuccess ? new Set(favorites.map((favorite) => favorite.questionId)) : null
   // 列表空禁用重做（在册 0 条建会话必 400）；加载中数据未知一并禁用
   const redoDisabled = !wrongBookQuery.isSuccess || entries.length === 0
+  // 列表空禁用强化练习（pending 0 条建会话必 400「需加强清单暂无待强化题目」）；加载中一并禁用
+  const reinforceDisabled = !reinforceQuery.isSuccess || reinforceEntries.length === 0
 
   return (
     <div className="review">
       <header className="review-hero">
         <h1 className="review-hero__title">错题本与收藏</h1>
         <p className="review-hero__desc">
-          答错的题自动收录进错题本：重做消灭，或归难点本长期跟进；收藏的题目集中在「收藏」视图。
+          答错的题自动收录进错题本：重做消灭，或归难点本长期跟进；答错或超时的题自动汇入「需加强」，强化练习答对不超时即出队；收藏的题目集中在「收藏」视图。
         </p>
       </header>
 
@@ -427,7 +516,97 @@ export function ReviewPage() {
         </p>
       )}
 
-      {view !== 'favorites' ? (
+      {view === 'reinforce' ? (
+        <section
+          className="review-panel"
+          role="tabpanel"
+          id="review-panel-reinforce"
+          aria-labelledby="review-tab-reinforce"
+        >
+          <div className="review-panel__head">
+            <p className="review-panel__desc">
+              {reinforceQuery.isSuccess && reinforceEntries.length > 0
+                ? `共 ${reinforceEntries.length} 题 · `
+                : ''}
+              答错或超时的题自动汇入，强化练习答对且不超时即出队
+            </p>
+            <Button
+              icon={<Zap aria-hidden="true" />}
+              disabled={reinforceDisabled}
+              onClick={openReinforceModal}
+            >
+              强化练习
+            </Button>
+          </div>
+
+          {reinforceQuery.isPending && <ListSkeleton label="正在加载需加强清单" />}
+          {reinforceQuery.isError && (
+            <ListError
+              error={reinforceQuery.error}
+              onRetry={() => void reinforceQuery.refetch()}
+            />
+          )}
+          {reinforceQuery.isSuccess && reinforceEntries.length === 0 && (
+            <ListEmpty
+              icon={Zap}
+              text="暂无待强化题目——答错或超时（含答对但超时）的题会自动汇入"
+            />
+          )}
+          {reinforceEntries.length > 0 && (
+            <div className="review-list">
+              {reinforceEntries.map((entry) => (
+                <ReinforceCard key={entry.questionId} entry={entry} />
+              ))}
+            </div>
+          )}
+        </section>
+      ) : view === 'favorites' ? (
+        <section
+          className="review-panel"
+          role="tabpanel"
+          id="review-panel-favorites"
+          aria-labelledby="review-tab-favorites"
+        >
+          <div className="review-panel__head">
+            <p className="review-panel__desc">
+              {favoritesQuery.isSuccess && favorites.length > 0
+                ? `共 ${favorites.length} 题 · `
+                : ''}
+              收藏的题目集中于此，按收藏时间排序
+            </p>
+          </div>
+
+          {favoritesQuery.isPending && <ListSkeleton label="正在加载收藏列表" />}
+          {favoritesQuery.isError && (
+            <ListError
+              error={favoritesQuery.error}
+              onRetry={() => void favoritesQuery.refetch()}
+            />
+          )}
+          {favoritesQuery.isSuccess && favorites.length === 0 && (
+            <ListEmpty icon={Star} text="暂无收藏" />
+          )}
+          {favorites.length > 0 && (
+            <div className="review-list">
+              {favorites.map((entry) => (
+                <FavoriteCard
+                  key={entry.questionId}
+                  entry={entry}
+                  removing={
+                    toggleFavoriteMutation.isPending &&
+                    toggleFavoriteMutation.variables?.questionId === entry.questionId
+                  }
+                  disabled={
+                    toggleFavoriteMutation.isPending &&
+                    toggleFavoriteMutation.variables?.questionId !== entry.questionId
+                  }
+                  onRemove={(questionId) => toggleFavorite(questionId, true)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      ) : (
         <section
           className="review-panel"
           role="tabpanel"
@@ -481,52 +660,6 @@ export function ReviewPage() {
                   favoriteBusy={toggleFavoriteMutation.isPending}
                   onToggleFavorite={toggleFavorite}
                   onDispose={openDisposal}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      ) : (
-        <section
-          className="review-panel"
-          role="tabpanel"
-          id="review-panel-favorites"
-          aria-labelledby="review-tab-favorites"
-        >
-          <div className="review-panel__head">
-            <p className="review-panel__desc">
-              {favoritesQuery.isSuccess && favorites.length > 0
-                ? `共 ${favorites.length} 题 · `
-                : ''}
-              收藏的题目集中于此，按收藏时间排序
-            </p>
-          </div>
-
-          {favoritesQuery.isPending && <ListSkeleton label="正在加载收藏列表" />}
-          {favoritesQuery.isError && (
-            <ListError
-              error={favoritesQuery.error}
-              onRetry={() => void favoritesQuery.refetch()}
-            />
-          )}
-          {favoritesQuery.isSuccess && favorites.length === 0 && (
-            <ListEmpty icon={Star} text="暂无收藏" />
-          )}
-          {favorites.length > 0 && (
-            <div className="review-list">
-              {favorites.map((entry) => (
-                <FavoriteCard
-                  key={entry.questionId}
-                  entry={entry}
-                  removing={
-                    toggleFavoriteMutation.isPending &&
-                    toggleFavoriteMutation.variables?.questionId === entry.questionId
-                  }
-                  disabled={
-                    toggleFavoriteMutation.isPending &&
-                    toggleFavoriteMutation.variables?.questionId !== entry.questionId
-                  }
-                  onRemove={(questionId) => toggleFavorite(questionId, true)}
                 />
               ))}
             </div>
@@ -588,6 +721,64 @@ export function ReviewPage() {
           </div>
           <p className="review-redo__hint">
             在册题目不足所选数量时，将按实际题量生成练习；题目按最近变化排序抽取。
+          </p>
+        </div>
+      </Modal>
+
+      {/* 强化练习弹窗（M3/T3-01f，reinforce 建会话；题数四选一形态同重做弹窗，提交中禁关闭） */}
+      <Modal
+        open={reinforceOpen}
+        onClose={closeReinforceModal}
+        title={reinforceOpen ? '强化练习' : undefined}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={closeReinforceModal}
+              disabled={reinforceMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button onClick={submitReinforce} loading={reinforceMutation.isPending}>
+              开始强化
+            </Button>
+          </>
+        }
+      >
+        <div className="review-redo">
+          {reinforceMutation.isError && (
+            <p className="review-redo__error" role="alert">
+              {operationErrorMessage(reinforceMutation.error, '创建强化练习失败，请稍后重试')}
+            </p>
+          )}
+          <p className="review-redo__label" id="review-reinforce-count-label">
+            题目数量
+          </p>
+          <div
+            className="review-count"
+            role="radiogroup"
+            aria-labelledby="review-reinforce-count-label"
+          >
+            {COUNT_OPTIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={reinforceCount === option}
+                className={
+                  reinforceCount === option
+                    ? 'review-count__option is-selected'
+                    : 'review-count__option'
+                }
+                disabled={reinforceMutation.isPending}
+                onClick={() => setReinforceCount(option)}
+              >
+                {option} 题
+              </button>
+            ))}
+          </div>
+          <p className="review-redo__hint">
+            待强化题目不足所选数量时，将按实际题量生成练习；题目按最近汇入排序抽取，答对且不超时即出队。
           </p>
         </div>
       </Modal>

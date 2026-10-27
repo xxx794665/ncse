@@ -2,7 +2,8 @@
  * 行测六模块展示元数据（T1-08f，模块选择页数据源）
  * - code 与 @ncse/shared 的 XingceModuleCode 一一对应，数组顺序即页面展示顺序
  * - 中文显示名 / 图标 / 简介为页面侧展示映射：shared 暂无显示名契约，未来跨端复用时再上移
- * - sessionDisplayName（T1-10b）：会话显示名单一入口（wrong_redo 会话无 moduleCode，显「错题重做」）
+ * - sessionDisplayName（T1-10b / M3 T3-01f）：会话显示名单一入口（wrong_redo 显「错题重做」、
+ *   reinforce 显「强化练习」——两种会话 moduleCode 均为 null，须先判 mode 再落模块反查）
  */
 
 import type { LucideIcon } from 'lucide-react'
@@ -75,7 +76,12 @@ export function moduleDisplayName(code: XingceModuleCode | null): string {
   return code === null ? '专项练习' : XINGCE_MODULE_NAMES[code]
 }
 
-/** 会话显示名（T1-10b）：wrong_redo 会话 moduleCode 为 null，按 mode 显「错题重做」；其余按模块反查 */
+/**
+ * 会话显示名（T1-10b / M3 T3-01f）：wrong_redo / reinforce 会话 moduleCode 均为 null，
+ * 按 mode 显「错题重做」/「强化练习」（reinforce 必须先判，否则落 null 兜底误显「专项练习」）；
+ * 其余按模块反查
+ */
 export function sessionDisplayName(mode: PracticeMode, moduleCode: XingceModuleCode | null): string {
+  if (mode === 'reinforce') return '强化练习'
   return mode === 'wrong_redo' ? '错题重做' : moduleDisplayName(moduleCode)
 }

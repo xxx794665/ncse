@@ -1,6 +1,7 @@
-/* 统计页（T1-11b）：总览 StatChip 行 + 分模块卡栅格 + 近 30 天双色柱状图
+/* 统计页（T1-11b / M3 T3-01f）：总览 StatChip 行 + 分模块卡栅格（含知识点掌握度下钻）+ 近 30 天双色柱状图
    移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
-   字面量均为规范定值：空态图标 48（§6.8）、徽章骨架高 32（§6.6）、1px 边框（例外）；
+   字面量均为规范定值：空态图标 48（§6.8）、徽章骨架高 32（§6.6）、行内图标 16（§5）、
+   焦点环 2px（§6.1）、1px 边框（例外）；
    趋势柱区高引用已登记 token --layout-stats-chart（§9 表 E，T1-11b 补登记） */
 
 /* ===== 页头（形态同 practice-hero / review-hero） ===== */
@@ -146,6 +147,177 @@
   font-size: var(--font-size-aux);
   line-height: var(--line-height-normal);
   color: var(--color-text-tertiary);
+}
+
+/* ===== 模块卡知识点掌握度下钻（M3/T3-01f）：把手行形态照 §7.4 解析区先例（1px border-subtle 分隔） ===== */
+
+.stats-module__drill {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* 下钻把手：左图标 + 「知识点掌握度」+ 右侧 chevron（展开旋转 180deg） */
+.stats-module__drill-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  width: 100%;
+  padding: var(--spacing-sm) 0 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.stats-module__drill-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.stats-module__drill-toggle:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* 行内图标 16px（§5 行内图标档） */
+.stats-module__drill-toggle > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.stats-module__drill-chevron {
+  margin-left: auto;
+  transition: transform var(--duration-fast) var(--easing-standard);
+}
+
+.stats-module__drill-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* ===== 下钻体：知识点掌握度列表（每点 = 名称行 + mastery 比例条 + 计数行） ===== */
+
+.stats-knowledge {
+  padding-top: var(--spacing-sm);
+}
+
+.stats-knowledge__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stats-point {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2xs);
+}
+
+.stats-point__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+/* 知识点名称 + 需加强 warning Tag（§2.2 语义色成对） */
+.stats-point__name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2xs);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+}
+
+/* mastery 百分比：mono + tabular-nums + semibold（§3.1）；需加强点 warning-text 标色 */
+.stats-point__mastery {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+.stats-point__mastery--warn {
+  color: var(--color-warning-text);
+}
+
+/* mastery 比例条：轨道 bg-muted + 填充 primary（需加强 warning），形态同 stats-module__bar */
+.stats-point__bar {
+  height: var(--spacing-xs);
+  overflow: hidden;
+  background-color: var(--color-bg-muted);
+  border-radius: var(--radius-full);
+}
+
+.stats-point__fill {
+  height: 100%;
+  background-color: var(--color-primary);
+}
+
+.stats-point__fill--warn {
+  background-color: var(--color-warning);
+}
+
+.stats-point__stats {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* 计数数字：mono + tabular-nums（§3.1），次级强调 */
+.stats-point__num {
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+/* 下钻区空态：该模块暂无知识点作答数据（轻量单句，不起 48px 大图标空态） */
+.stats-knowledge__empty {
+  margin: 0;
+  font-size: var(--font-size-aux);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-tertiary);
+}
+
+/* 下钻区加载失败：danger-soft 提示条 + 重试（形态同 stats-error，局部兜底） */
+.stats-knowledge__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-danger-soft);
+  border-radius: var(--radius-sm);
+}
+
+.stats-knowledge__error-text {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-normal);
+  color: var(--color-danger-soft-text);
+}
+
+/* 下钻区骨架：三个点行形高块（头+条+计数行之和 ≈ 48px，取 --spacing-2xl） */
+.stats-knowledge__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.stats-skeleton--point {
+  height: var(--spacing-2xl);
+  border-radius: var(--radius-sm);
 }
 
 /* ===== 趋势区：双色叠放柱状图（纯 div 手绘；柱宽 flex 自适应，390px 不横向溢出） ===== */

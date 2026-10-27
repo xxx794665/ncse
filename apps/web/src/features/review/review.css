@@ -1,4 +1,4 @@
-/* 错题·收藏·复习页（T1-10b）：三视图 Tab + 条目卡列表 + 重做/处置弹窗
+/* 错题·需加强·收藏复习页（T1-10b / M3 T3-01f）：四视图 Tab + 条目卡列表 + 重做/强化/处置弹窗
    移动优先；断点值对应 --breakpoint-tablet / --breakpoint-pc（§4.2）；只引用语义 token（§9）
    字面量均为规范定值：图标 16/20/48（§5/§6.8）、Tab 激活指示条高 2px（§6.4 顶栏当前页同构）、
    焦点环 2px（§6.1）、禁用透明度 0.5（§6.1）、题数选项高 40（§6.1 控件 md 档）、1px 边框（例外） */
@@ -140,6 +140,14 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-sm);
+}
+
+/* 卡头 Tag 组（M3/T3-01f 需加强卡：模块 Tag + reason 标记并排列） */
+.review-card__tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2xs);
 }
 
 /* 题干预览：服务端已截断 80 字，展示侧两行截断兜底 */
