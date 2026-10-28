@@ -227,6 +227,30 @@ export const questionKnowledge = sqliteTable(
   ],
 )
 
+/**
+ * 题目 AI 解析（M3/T3-01g 一期，开发期批量增强）：一对一挂题目（questionId 唯一）。
+ * content 为纯文本方法论讲解（AI 产出，一期不做富片段）；不触碰 questions.analysis
+ * 官方解析列——AI 解析是后置增强层，与题库主体解耦（展示链路另行立项）。
+ * ai_version = 产出该解析的 import_runs 序号（重新生成 = 版本覆盖，吸收 SQL
+ * ON CONFLICT(question_id) 全列更新）。
+ */
+export const questionAiAnalysis = sqliteTable(
+  'question_ai_analysis',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    questionId: integer('question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'cascade' }),
+    /** AI 方法论讲解（纯文本，段落以 \n 分隔） */
+    content: text('content').notNull(),
+    /** 生成版本：产出该解析的 import_runs 序号（重新生成 = 版本覆盖） */
+    aiVersion: integer('ai_version').notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [uniqueIndex('question_ai_analysis_question_uq').on(table.questionId)],
+)
+
 /** 卷型蓝图：挂科目（如「国考行测·省级卷」），题目量与时长明细在 blueprint_modules */
 export const blueprints = sqliteTable(
   'blueprints',

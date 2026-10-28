@@ -28,6 +28,13 @@
  * code 换行分隔，生成幂等 tag.sql：pair upsert（tag_version=运行号、source='ai'）
  * + 每题替换清理 + import_runs 行；按题原子，非法 qid/code 或数量越界整题跳过记
  * error；staging 为空不写文件退出 0。SQL 固定生成至 <产物目录>/tag.sql）。
+ * ai-analysis 模式：node dist/main.js ai-analysis --products <JSON 产物目录>
+ * --version <正整数>（吸收 <产物目录>/ai-in/<qid>.txt 的 AI 解析子代理 staging
+ * ——每题一份纯文本方法论讲解，生成幂等 ai-analysis.sql：question_ai_analysis
+ * 逐题 upsert（ai_version=运行号，ON CONFLICT(question_id) 全列覆盖）+ import_runs
+ * 行；按题原子，未知 qid error 跳过、空/全空白或质量门跳过题 warning 跳过；
+ * staging 为空不写文件退出 0。SQL 固定生成至 <产物目录>/ai-analysis.sql——独立
+ * 自包含产物不并入 import.sql，AI 解析为后置数据层与题库主体解耦（M3/T3-01g））。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目与归属 pair，均记 warning）；1 = 产物结构无效
@@ -38,6 +45,8 @@
  * 无 --bucket、--concurrency 越界 2–16、wrangler 未安装、桶名或对象键不合规）。
  * vision 0 = 无 error 且无待提取键（待提取 = 必选宿主键，ADR-0011）；1 = 存在 error 或仍有待提取键（或产物结构无效）；
  * 2 = 用法错误（缺 --products、products 目录不存在、路径越界）。
+ * tag / ai-analysis 0 = 无 error（warning 不判失败，staging 为空亦 0）；1 = 问题清单存在
+ * error 或产物结构无效；2 = 用法错误（缺参数、version 非正整数、products 目录不存在）。
  * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求；vision 阶段零网络
  * 零凭据零子进程（看图由外部视觉子代理读 r2/ 工件完成，文本经 vision-in/ 交换）。
  * main 为 async（images 阶段含 sharp 异步压缩与子进程上传；vision 阶段逻辑同步但
@@ -47,6 +56,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { runAiStage } from './ai-stage.js'
 import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { runImagesStage, InvalidInputDirError } from './image-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
@@ -54,6 +64,7 @@ import { InvalidUploadTargetError, MissingWranglerError } from './r2-upload.js'
 import { runTagStage } from './tag-stage.js'
 import { runVisionStage } from './vision-stage.js'
 import type {
+  AiStageResult,
   DbStageResult,
   ImagesStageResult,
   RunImportResult,
@@ -110,20 +121,31 @@ interface TagCliValues {
   version?: string
 }
 
+/** ai-analysis 子命令选项值 */
+interface AiCliValues {
+  products?: string
+  version?: string
+}
+
 const TAG_USAGE =
   '用法：node dist/main.js tag --products <JSON 产物目录> --version <正整数>（吸收 tag-in/ staging，SQL 生成至 <产物目录>/tag.sql）'
+
+const AI_ANALYSIS_USAGE =
+  '用法：node dist/main.js ai-analysis --products <JSON 产物目录> --version <正整数>（吸收 ai-in/ staging，SQL 生成至 <产物目录>/ai-analysis.sql）'
 
 /**
  * CLI 主函数（供测试直接调用；返回退出码，不直接 process.exit 以保证输出冲刷）。
  * argv[0] === 'db' 进入 db 入库模式；argv[0] === 'images' 进入 images 图片模式；
- * argv[0] === 'vision' 进入 vision 视觉提取模式；其余参数照旧为 parse 模式
- * （行为向后兼容）。
+ * argv[0] === 'vision' 进入 vision 视觉提取模式；argv[0] === 'tag' 进入 tag 打标
+ * 吸收模式；argv[0] === 'ai-analysis' 进入 AI 解析吸收模式；其余参数照旧为
+ * parse 模式（行为向后兼容）。
  */
 export async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'db') return runDbCommand(argv.slice(1))
   if (argv[0] === 'images') return runImagesCommand(argv.slice(1))
   if (argv[0] === 'vision') return runVisionCommand(argv.slice(1))
   if (argv[0] === 'tag') return runTagCommand(argv.slice(1))
+  if (argv[0] === 'ai-analysis') return runAiAnalysisCommand(argv.slice(1))
   return runParseCommand(argv)
 }
 
@@ -186,6 +208,73 @@ function runTagCommand(argv: string[]): number {
     console.log(
       `打标统计：题目 ${result.stats.taggedQuestions}，pair ${result.stats.tagPairs}，跳过 ${result.stats.skippedQuestions}`,
     )
+  }
+  for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {
+    const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
+    console.error(`[${entry.severity}] ${entry.file}${qid}：${entry.code} — ${entry.message}`)
+  }
+  const hiddenIssues = result.issues.length - PRINT_ISSUE_LIMIT
+  if (hiddenIssues > 0) console.error(`…另有 ${hiddenIssues} 条问题未打印`)
+  return result.issues.some((entry) => entry.severity === 'error') ? 1 : 0
+}
+
+/** ai-analysis AI 解析吸收模式（M3/T3-01g）：ai-in/ staging → 幂等 ai-analysis.sql */
+function runAiAnalysisCommand(argv: string[]): number {
+  let values: AiCliValues
+  try {
+    values = parseArgs({
+      args: argv,
+      options: {
+        products: { type: 'string' },
+        version: { type: 'string' },
+      },
+    }).values
+  } catch (err) {
+    console.error(`参数错误：${err instanceof Error ? err.message : String(err)}\n${AI_ANALYSIS_USAGE}`)
+    return 2
+  }
+  const products = values.products
+  const version = values.version
+  if (products === undefined || products === '' || version === undefined || version === '') {
+    console.error(AI_ANALYSIS_USAGE)
+    return 2
+  }
+  if (!/^[0-9]+$/.test(version) || Number(version) <= 0) {
+    console.error(`--version 须为正整数：${version}`)
+    return 2
+  }
+  const productsAbs = path.resolve(products)
+  let isDir = false
+  try {
+    isDir = fs.statSync(productsAbs).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) {
+    console.error(`产物目录不存在或不是目录：${productsAbs}`)
+    return 2
+  }
+
+  let result: AiStageResult
+  try {
+    result = runAiStage({ productsDir: productsAbs, version: Number(version) })
+  } catch (err) {
+    // 产物结构无效 → 1；路径越界按用法错误 → 2；其余异常如实上抛（同 tag 口径）
+    if (err instanceof InvalidProductsError) {
+      console.error(err.message)
+      return 1
+    }
+    if (err instanceof ImportPathEscapeError) {
+      console.error(err.message)
+      return 2
+    }
+    throw err
+  }
+  if (result.stats.analyzedQuestions === 0) {
+    console.log(result.issues.length > 0 ? '无成功吸收的 AI 解析产物（问题明细见下方清单）' : '无 AI 解析产物（ai-in/ 为空）')
+  } else {
+    console.log(`AI 解析 SQL 已生成：${result.sqlPath}`)
+    console.log(`AI 解析统计：题目 ${result.stats.analyzedQuestions}，跳过 ${result.stats.skippedQuestions}`)
   }
   for (const entry of result.issues.slice(0, PRINT_ISSUE_LIMIT)) {
     const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
