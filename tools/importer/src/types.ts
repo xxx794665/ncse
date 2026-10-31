@@ -271,6 +271,107 @@ export interface AiStageResult {
   issues: ImportIssue[]
 }
 
+/* ============ 截图导入阶段（M3/T3-01h-a/ADR-0014：shot-in/ staging → 人工草稿 → shot.sql） ============ */
+
+/** 截图 staging（视觉子代理按批文件转写写入 shot-in/<基名>.json；基名 = 截图文件名去扩展名，须匹配 ^[A-Za-z0-9_-]+$） */
+export interface ShotStaging {
+  /** 代理建议的模块 code（六选一；人工确认草稿时可改） */
+  moduleCode: string
+  /** 题干全文（材料性文本按阅读序全部转写并入题干；公式转 LaTeX） */
+  stem: string
+  /** 选项（key 须从 'A' 起连续大写字母、数量 2–6、key 不重复） */
+  options: Array<{ key: string; text: string }>
+  /** 图中可见的答案选项键；不可见为空串 */
+  answer: string
+  /** 解析文本；图中不可见为空串 */
+  analysis: string
+  /** true = 一张图含多道小题（一期一图一题，吸收记 warning 跳过，人工拆图重截） */
+  multiQuestion: boolean
+  /** 可选说明（视觉提取附注；吸收时并入草稿 reviewNotes 供人工参考） */
+  notes?: string
+}
+
+/** 人工确认草稿（吸收产出 shot-drafts/shot-<基名>.json；人工校对后置 confirmed 才入库） */
+export interface ShotDraft {
+  /** 导入自然键（ADR-0014：`shot-<截图基名>`，与源仓库纯数字 qid 空间隔离；基名即幂等键） */
+  qid: string
+  /** 'draft' = 吸收产出待人工确认；'confirmed' = 人工已确认可入库 */
+  status: 'draft' | 'confirmed'
+  /** 源截图文件名（基名 + 原扩展名，含原始大小写；溯源用） */
+  sourceFile: string
+  /** 所属模块 code（代理建议、人工校对） */
+  moduleCode: ModuleCode
+  /** 一期恒单选 */
+  kind: 'single_choice'
+  /** 题干纯文本（emit 时转文本单段富片段） */
+  stem: string
+  /** 选项纯文本（emit 时逐项转文本单段富片段） */
+  options: Array<{ key: string; text: string }>
+  /** 答案选项键；待人工补充为空串（emit 质量门 missing_answer 拦截） */
+  answer: string
+  /** 解析纯文本；缺失为空串（不阻塞入库） */
+  analysis: string
+  /** 人工确认提示清单（确定性文本：answer 缺失/不在键内、解析缺失、代理附注） */
+  reviewNotes: string[]
+}
+
+/** runShotAbsorb 入参（吸收模式与 emit 模式分开的返回结构） */
+export interface ShotAbsorbOptions {
+  /** 工作区目录（其下 screenshots-in/ 溯源源图、shot-in/ 读 staging、shot-drafts/ 写草稿） */
+  productsDir: string
+}
+
+/** 吸收统计（CLI 摘要打印；不写 import_runs——草稿阶段尚无入库动作） */
+export interface ShotAbsorbStats {
+  /** 新建草稿数 */
+  created: number
+  /** 因同名草稿已存在而跳过数（保护人工编辑） */
+  skippedExisting: number
+  /** warning 级问题条数 */
+  warnings: number
+  /** error 级问题条数 */
+  errors: number
+}
+
+/** runShotAbsorb 返回值 */
+export interface ShotAbsorbResult {
+  stats: ShotAbsorbStats
+  /** 问题清单（收集序 = staging 文件名字典序，确定性） */
+  issues: ImportIssue[]
+}
+
+/** runShotEmit 入参 */
+export interface ShotEmitOptions {
+  /** 工作区目录（其下 shot-drafts/ 读已确认草稿；shot.sql 写回本目录） */
+  productsDir: string
+  /** import_runs 版本号（正整数；同 version 重跑幂等覆盖，与 db/tag/ai-analysis 共用 version 空间） */
+  version: number
+}
+
+/** 截图入库统计（import_runs 行的 stats 同结构） */
+export interface ShotEmitStats {
+  /** 实际写入 questions 的截图题数（不含门控与结构错误跳过） */
+  shotQuestions: number
+  /** 质量门 warning 级跳过数（missing_answer / answer_not_in_options / no_options） */
+  gatedSkipped: number
+  /** 草稿结构破坏的 error 级跳过数（人工修复后重跑） */
+  errorSkipped: number
+}
+
+/** runShotEmit 返回值（无 confirmed 题时 sql/sqlPath 为空串且不写文件不记 import_runs——空语义照 tag-stage） */
+export interface ShotEmitResult {
+  /** 生成的 SQL 全文（UTF-8 无 BOM；同草稿 + 同 version 逐字节确定）；未写文件为空串 */
+  sql: string
+  /** SQL 写入路径（恒为工作区目录下的 shot.sql）；未写文件为空串 */
+  sqlPath: string
+  /** 实际入库统计（import_runs 行的 stats 同值） */
+  stats: ShotEmitStats
+  /** 已确认草稿内容指纹（sha256 hex，按文件名字典序拼接文件名与内容；无 confirmed 为空串） */
+  inputDigest: string
+  /** 问题清单（收集序 = 草稿文件名字典序，确定性） */
+  issues: ImportIssue[]
+}
+
 /* ============ 图片阶段（T1-05：图片收集、压缩、内容寻址键派生与产物路径重写；阶段 B 增 R2 上传） ============ */
 
 /** runImagesStage 入参（images 子命令与测试直调共用） */

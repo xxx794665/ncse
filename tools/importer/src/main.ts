@@ -35,6 +35,15 @@
  * 行；按题原子，未知 qid error 跳过、空/全空白或质量门跳过题 warning 跳过；
  * staging 为空不写文件退出 0。SQL 固定生成至 <产物目录>/ai-analysis.sql——独立
  * 自包含产物不并入 import.sql，AI 解析为后置数据层与题库主体解耦（M3/T3-01g））。
+ * shot 模式（M3/T3-01h-a，ADR-0014 截图导入一期）：node dist/main.js shot
+ * --products <工作区目录>（缺省吸收：<产物目录>/shot-in/<基名>.json 的视觉提取
+ * 子代理 staging 逐图校验产人工草稿 <产物目录>/shot-drafts/shot-<基名>.json，
+ * answer 空缺/不在键内以 reviewNotes 提示人工，同名草稿已存在跳过不覆盖保护
+ * 人工编辑）；或 --emit --version <正整数>（读 status=confirmed 草稿过质量门
+ * missing_answer/answer_not_in_options/no_options（warning 跳过）生成独立自包含
+ * shot.sql：分类体系定位行 + 逐题 questions upsert（qid=shot-<基名>、纯文本单段
+ * 富片段）+ import_runs 行；无 confirmed 题不写文件退出 0。--version 仅随
+ * --emit 必填（吸收模式不消费，传入报用法错误））。
  * 产物目录默认 .import-out/（已被 .gitignore 忽略，题库数据不入 Git——ADR-0004）。
  * 退出码：parse 0 = 无硬错误（允许有 warning）；1 = 问题清单存在 error；2 = 参数/输入目录错误。
  * db 0 = SQL 生成成功（含跳过质量问题题目与归属 pair，均记 warning）；1 = 产物结构无效
@@ -47,6 +56,10 @@
  * 2 = 用法错误（缺 --products、products 目录不存在、路径越界）。
  * tag / ai-analysis 0 = 无 error（warning 不判失败，staging 为空亦 0）；1 = 问题清单存在
  * error 或产物结构无效；2 = 用法错误（缺参数、version 非正整数、products 目录不存在）。
+ * shot 0 = 无 error（吸收允许 warning：multiQuestion 跳过/草稿已存在跳过；emit 允许质量门
+ * warning 跳过；无 confirmed 题亦 0）；1 = 问题清单存在 error（staging/草稿结构破坏等）；
+ * 2 = 用法错误（缺 --products、--emit 缺 --version、吸收模式传 --version、version 非正
+ * 整数、products 目录不存在）。
  * 本工具除 images --bucket 上传（显式启用）外不做任何网络请求；vision 阶段零网络
  * 零凭据零子进程（看图由外部视觉子代理读 r2/ 工件完成，文本经 vision-in/ 交换）。
  * main 为 async（images 阶段含 sharp 异步压缩与子进程上传；vision 阶段逻辑同步但
@@ -61,6 +74,7 @@ import { runDbStage, InvalidProductsError } from './db-stage.js'
 import { runImagesStage, InvalidInputDirError } from './image-stage.js'
 import { ImportPathEscapeError, runImport } from './pipeline.js'
 import { InvalidUploadTargetError, MissingWranglerError } from './r2-upload.js'
+import { runShotAbsorb, runShotEmit } from './shot-stage.js'
 import { runTagStage } from './tag-stage.js'
 import { runVisionStage } from './vision-stage.js'
 import type {
@@ -68,6 +82,8 @@ import type {
   DbStageResult,
   ImagesStageResult,
   RunImportResult,
+  ShotAbsorbResult,
+  ShotEmitResult,
   TagStageResult,
   VisionStageResult,
 } from './types.js'
@@ -127,17 +143,28 @@ interface AiCliValues {
   version?: string
 }
 
+/** shot 子命令选项值 */
+interface ShotCliValues {
+  products?: string
+  emit?: boolean
+  version?: string
+}
+
 const TAG_USAGE =
   '用法：node dist/main.js tag --products <JSON 产物目录> --version <正整数>（吸收 tag-in/ staging，SQL 生成至 <产物目录>/tag.sql）'
 
 const AI_ANALYSIS_USAGE =
   '用法：node dist/main.js ai-analysis --products <JSON 产物目录> --version <正整数>（吸收 ai-in/ staging，SQL 生成至 <产物目录>/ai-analysis.sql）'
 
+const SHOT_USAGE =
+  '用法：node dist/main.js shot --products <工作区目录>（吸收 shot-in/ staging 产 shot-drafts/ 人工草稿）；或 node dist/main.js shot --products <工作区目录> --emit --version <正整数>（已确认草稿生成 SQL 至 <工作区目录>/shot.sql）'
+
 /**
  * CLI 主函数（供测试直接调用；返回退出码，不直接 process.exit 以保证输出冲刷）。
  * argv[0] === 'db' 进入 db 入库模式；argv[0] === 'images' 进入 images 图片模式；
  * argv[0] === 'vision' 进入 vision 视觉提取模式；argv[0] === 'tag' 进入 tag 打标
- * 吸收模式；argv[0] === 'ai-analysis' 进入 AI 解析吸收模式；其余参数照旧为
+ * 吸收模式；argv[0] === 'ai-analysis' 进入 AI 解析吸收模式；argv[0] === 'shot'
+ * 进入截图导入模式（缺省吸收、--emit 入库）；其余参数照旧为
  * parse 模式（行为向后兼容）。
  */
 export async function main(argv: string[]): Promise<number> {
@@ -146,6 +173,7 @@ export async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'vision') return runVisionCommand(argv.slice(1))
   if (argv[0] === 'tag') return runTagCommand(argv.slice(1))
   if (argv[0] === 'ai-analysis') return runAiAnalysisCommand(argv.slice(1))
+  if (argv[0] === 'shot') return runShotCommand(argv.slice(1))
   return runParseCommand(argv)
 }
 
@@ -283,6 +311,106 @@ function runAiAnalysisCommand(argv: string[]): number {
   const hiddenIssues = result.issues.length - PRINT_ISSUE_LIMIT
   if (hiddenIssues > 0) console.error(`…另有 ${hiddenIssues} 条问题未打印`)
   return result.issues.some((entry) => entry.severity === 'error') ? 1 : 0
+}
+
+/** shot 截图导入模式（M3/T3-01h-a，ADR-0014）：缺省吸收 shot-in/ staging 产草稿；--emit 读已确认草稿产 shot.sql */
+function runShotCommand(argv: string[]): number {
+  let values: ShotCliValues
+  try {
+    values = parseArgs({
+      args: argv,
+      options: {
+        products: { type: 'string' },
+        emit: { type: 'boolean' },
+        version: { type: 'string' },
+      },
+    }).values
+  } catch (err) {
+    console.error(`参数错误：${err instanceof Error ? err.message : String(err)}\n${SHOT_USAGE}`)
+    return 2
+  }
+  const products = values.products
+  if (products === undefined || products === '') {
+    console.error(SHOT_USAGE)
+    return 2
+  }
+  // --version 仅随 --emit 启用（吸收模式不消费 version；镜像 images 的旋钮随主开关先例），
+  // emit 模式必填（import_runs 版本号语义与 tag/db/ai-analysis 对齐）
+  const version = values.version
+  if (values.emit === true) {
+    if (version === undefined || version === '') {
+      console.error(`--emit 须配 --version <正整数>\n${SHOT_USAGE}`)
+      return 2
+    }
+    if (!/^[0-9]+$/.test(version) || Number(version) <= 0) {
+      console.error(`--version 须为正整数：${version}`)
+      return 2
+    }
+  } else if (version !== undefined) {
+    console.error(`--version 仅在 --emit 启用时可用\n${SHOT_USAGE}`)
+    return 2
+  }
+  const productsAbs = path.resolve(products)
+  let isDir = false
+  try {
+    isDir = fs.statSync(productsAbs).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) {
+    console.error(`产物目录不存在或不是目录：${productsAbs}`)
+    return 2
+  }
+
+  // 两模式共用的问题清单打印与退出码判定（error 级 → 1，warning 不判失败）
+  const reportIssues = (issues: Array<{ severity: string; code: string; file: string; qid: string | null; message: string }>): number => {
+    for (const entry of issues.slice(0, PRINT_ISSUE_LIMIT)) {
+      const qid = entry.qid === null ? '' : ` qid=${entry.qid}`
+      console.error(`[${entry.severity}] ${entry.file}${qid}：${entry.code} — ${entry.message}`)
+    }
+    const hiddenIssues = issues.length - PRINT_ISSUE_LIMIT
+    if (hiddenIssues > 0) console.error(`…另有 ${hiddenIssues} 条问题未打印`)
+    return issues.some((entry) => entry.severity === 'error') ? 1 : 0
+  }
+
+  try {
+    if (values.emit === true) {
+      const result: ShotEmitResult = runShotEmit({ productsDir: productsAbs, version: Number(version) })
+      if (result.stats.shotQuestions === 0) {
+        console.log(
+          result.issues.length > 0
+            ? '无已确认草稿可入库（问题明细见下方清单，不写文件）'
+            : '无已确认草稿（shot-drafts/ 无 confirmed 题，不写文件）',
+        )
+      } else {
+        console.log(`截图入库 SQL 已生成：${result.sqlPath}`)
+        console.log(
+          `截图导入统计：题目 ${result.stats.shotQuestions}，门控跳过 ${result.stats.gatedSkipped}，错误跳过 ${result.stats.errorSkipped}`,
+        )
+      }
+      return reportIssues(result.issues)
+    }
+    const result: ShotAbsorbResult = runShotAbsorb({ productsDir: productsAbs })
+    if (result.stats.created === 0) {
+      console.log(
+        result.issues.length > 0
+          ? '无草稿产出（问题明细见下方清单）'
+          : '无截图 staging（shot-in/ 为空，先运行批次生成器并派发视觉提取）',
+      )
+    } else {
+      console.log(
+        `截图草稿已生成：新建 ${result.stats.created}，跳过已存在 ${result.stats.skippedExisting}（${path.join(productsAbs, 'shot-drafts')}）`,
+      )
+    }
+    return reportIssues(result.issues)
+  } catch (err) {
+    // 路径越界按用法错误 → 2；其余异常如实上抛（shot 阶段不读 parse 产物，无 InvalidProductsError 路径）
+    if (err instanceof ImportPathEscapeError) {
+      console.error(err.message)
+      return 2
+    }
+    throw err
+  }
 }
 
 /** parse 模式（T1-04 原行为）：文本导入 → JSON 中间产物 */

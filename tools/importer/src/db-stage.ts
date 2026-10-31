@@ -394,6 +394,19 @@ export function moduleIdExpr(code: ModuleCode): string {
   return `(SELECT id FROM modules WHERE subject_id=${XINGCE_SUBJECT_ID} AND code='${code}')`
 }
 
+/**
+ * a. 分类体系定位 upsert 段（exam_types/subjects/modules 六模块，by code 幂等）：
+ * 语句序 = 考试类型 → 科目 → 模块目录序。导出供 shot-stage 复用（M3/T3-01h-a
+ * 独立 shot.sql 的定位行同源本段——语句文本唯一权威在此，勿在调用侧另写形态）。
+ */
+export function taxonomySeedStatements(): string[] {
+  const statements = [examTypeUpsert(), subjectUpsert()]
+  for (const folder of MODULE_FOLDERS) {
+    statements.push(moduleUpsert(folder.code, folder.name, folder.sortOrder))
+  }
+  return statements
+}
+
 /** a. 考试类型 upsert（唯一键 code） */
 function examTypeUpsert(): string {
   return `INSERT INTO exam_types (code, name) VALUES ('civil_service', '公务员') ON CONFLICT(code) DO UPDATE SET name=excluded.name, ${UPDATED_AT}`
@@ -675,10 +688,7 @@ export function runDbStage(options: DbStageOptions): DbStageResult {
 
   // a. 分类体系 upsert：考试类型、科目、六模块（全量 upsert，与产物模块覆盖面无关；
   //    语句序 = 考试类型 → 科目 → 模块目录序，blueprints.sql 以同一序复用本段）
-  const taxonomyStatements = [examTypeUpsert(), subjectUpsert()]
-  for (const folder of MODULE_FOLDERS) {
-    taxonomyStatements.push(moduleUpsert(folder.code, folder.name, folder.sortOrder))
-  }
+  const taxonomyStatements = taxonomySeedStatements()
   statements.push(...taxonomyStatements)
 
   // a2. 蓝图种子 upsert + 孤儿清理（T2-01b）：排在分类体系之后（subject/module 标量子
